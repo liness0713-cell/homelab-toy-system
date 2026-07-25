@@ -1,0 +1,18 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hello-demo
+  namespace: ingress-demo
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: demo.toy-system.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: hello-demo
+                port:
+                  number: 80

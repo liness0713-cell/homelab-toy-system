@@ -56,12 +56,14 @@ Policy（保单）
 ### 1.4 数据流一句话
 
 ```
-用户 → frontend → gateway-service(JWT校验) → policy-service
+外部用户 → nginx-ingress-controller（域名路由/TLS终止，P2引入）
+              → gateway-service(JWT校验) → policy-service
                                                  ├─ 写 MySQL（保单主数据）
                                                  ├─ 读/写 Redis（详情缓存）
                                                  └─ 发 Kafka topic: policy-events
                                                          ├─ notification-service 消费 → 模拟通知
                                                          └─ search-service 消费 → 写入 ES → 对外提供搜索
+              → frontend（静态资源）
 ```
 
 ---
@@ -152,7 +154,25 @@ StatefulSet+PV是K8s管理有状态服务的原生机制，虽然3.2节决定不
 
 ---
 
-## 4. CI/CD 流水线设计
+### 3.5 集群入口层：Nginx Ingress Controller（替换k3s默认的Traefik）
+
+这一层之前的规划里漏掉了，补上——对应你实际项目里"所有集群内业务都走nginx-proxy访问外部"这个真实经验。
+
+**先厘清两个容易混的概念：**
+- **`gateway-service`（Spring Cloud Gateway）**：应用层网关，做的是"业务相关"的判断——JWT鉴权、按业务规则路由到具体微服务、限流。本质是业务代码，只是长在网络入口位置。
+- **Ingress层（nginx）**：集群边缘的反向代理，纯L7流量入口——TLS终止(HTTPS证书)、按域名/路径做最基础转发，不涉及业务逻辑判断。
+
+两层职责不同、可以共存，实际流量路径是：
+
+```
+外部用户 → nginx-ingress-controller（域名路由/TLS终止）
+              → gateway-service（JWT鉴权/业务路由）→ policy-service / search-service 等
+              → frontend（静态资源）
+```
+
+**k3s默认自带的Ingress Controller其实是Traefik**（k3s安装时自动装好，不用额外操作就有）。但既然实际生产用的是nginx,为了让homelab经验更贴近真实工作场景，这里明确决定：**卸载/禁用k3s默认的Traefik，改装 `ingress-nginx`**（用Helm chart部署,官方chart名为 `ingress-nginx/ingress-nginx`）,让你写的Ingress YAML、遇到的注解(annotation)写法、调试思路,都能跟公司技术栈对上。
+
+这一步安排进 **P2阶段**，和 `gateway-service`/`frontend` 一起搭起来，因为这时候才第一次需要"外部怎么访问到集群里的东西"这个问题的答案。
 
 对应全景图第一节 + 十二节2.2（灰度发布可作为后续加练）。
 
@@ -193,7 +213,7 @@ StatefulSet+PV是K8s管理有状态服务的原生机制，虽然3.2节决定不
 |---|---|---|
 | **P0（已完成）** | k3s单节点 + Docker | ✅ |
 | **P1** | 本地docker-compose拉起MySQL/Redis；写 `policy-service`（含Redis缓存），本地直接跑通CRUD | 能在本地curl测试保单CRUD |
-| **P2** | 加 `gateway-service`，接JWT鉴权；加 `frontend` 登录+列表页 | 完整走一遍"前端→网关鉴权→后端"链路 |
+| **P2** | 加 `gateway-service`，接JWT鉴权；加 `frontend` 登录+列表页；k3s里卸载默认Traefik、装 `ingress-nginx`，配好Ingress规则让外部能访问到gateway-service/frontend（详见3.5节） | 完整走一遍"外部→nginx-ingress→网关鉴权→后端"链路 |
 | **P3** | 本地docker-compose加Kafka；`policy-service`创建保单时发事件；写 `notification-service` 消费 | 体验"同一个事件，独立消费者"的解耦 |
 | **P4** | 本地加ES；写 `search-service` 消费同一事件写入ES，暴露搜索API；前端加搜索页 | 完整CQRS读写分离链路跑通 |
 | **P5** | 宿主机上用Docker常驻起MySQL/Redis（模拟云托管）；k3s里建`toy-system` namespace，通过"无selector Service"让业务服务连上宿主机MySQL/Redis；Kafka/ES用Helm单副本部署进k3s；所有业务服务部署到k3s（先`kubectl apply`手动部署，不接CI/CD） | "生产"环境跑通一次全链路，体验k3s连接外部依赖的方式 |
@@ -257,6 +277,7 @@ topic名：`policy-events`（单topic多事件类型，通过 `eventType` 字段
 5. 先按 P1→P4 顺序实现，**每完成一个P就应该能跑起来看到效果**，不要一次性把所有服务代码都写完再联调。
 6. `policy-service` 的表结构变更一律通过Liquibase changelog管理，不允许在Java代码里手写"检测表是否存在、不存在就CREATE TABLE"的逻辑。
 7. P5阶段k3s里指向宿主机MySQL/Redis的"无selector Service + Endpoints"配置，单独写清楚在 `infra/k8s/middleware/external-services.yaml`，并在该文件顶部用注释说明"这模拟的是云托管数据库，指向宿主机IP"，方便回头复习时一眼看懂意图。
+8. P2阶段部署Ingress前，先确认并卸载k3s自带的Traefik（k3s安装参数或`kubectl -n kube-system delete`处理，具体以Claude Code实测为准），再用Helm装`ingress-nginx`，避免两个Ingress Controller同时抢80/443端口冲突。
 
 ---
 
@@ -267,3 +288,4 @@ topic名：`policy-events`（单topic多事件类型，通过 `eventType` 字段
 - **有状态中间件归属**：MySQL/Redis跑在宿主机（Docker常驻+systemd），模拟云托管服务；k3s业务集群通过"无selector Service"访问；StatefulSet+PV机制作为独立练习模块，不承载真实业务数据（详见3.2/3.4节）。
 - **表结构迁移工具**：Liquibase（对齐公司实践）。
 - **报表库**：ClickHouse（而非继续镜像到MySQL），体验OLAP列式存储优势（详见P9）。
+- **集群入口**：用 `ingress-nginx` 替换k3s默认自带的Traefik，对齐实际生产用nginx做集群入口的经验（详见3.5节，P2引入）。
