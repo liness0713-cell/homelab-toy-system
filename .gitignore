@@ -1,0 +1,28 @@
+# Java / Maven
+target/
+*.class
+*.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+
+# Node
+node_modules/
+dist/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+
+# Env
+.env
+
+# Claude Code local settings (machine-specific, not shared)
+.claude/settings.local.json

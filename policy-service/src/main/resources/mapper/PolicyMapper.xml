@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.toysystem.policy.mapper.PolicyMapper">
+
+    <resultMap id="PolicyResultMap" type="com.toysystem.policy.model.Policy">
+        <id property="id" column="id"/>
+        <result property="policyNo" column="policy_no"/>
+        <result property="holderName" column="holder_name"/>
+        <result property="productType" column="product_type"/>
+        <result property="premium" column="premium"/>
+        <result property="status" column="status"/>
+        <result property="createdAt" column="created_at"/>
+        <result property="updatedAt" column="updated_at"/>
+    </resultMap>
+
+    <insert id="insert" parameterType="com.toysystem.policy.model.Policy" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO policy (policy_no, holder_name, product_type, premium, status, created_at, updated_at)
+        VALUES (#{policyNo}, #{holderName}, #{productType}, #{premium}, #{status}, #{createdAt}, #{updatedAt})
+    </insert>
+
+    <select id="findById" resultMap="PolicyResultMap">
+        SELECT id, policy_no, holder_name, product_type, premium, status, created_at, updated_at
+        FROM policy
+        WHERE id = #{id}
+    </select>
+
+    <select id="findAll" resultMap="PolicyResultMap">
+        SELECT id, policy_no, holder_name, product_type, premium, status, created_at, updated_at
+        FROM policy
+        ORDER BY id DESC
+    </select>
+
+    <update id="update" parameterType="com.toysystem.policy.model.Policy">
+        UPDATE policy
+        SET holder_name  = #{holderName},
+            product_type = #{productType},
+            premium      = #{premium},
+            status       = #{status},
+            updated_at   = #{updatedAt}
+        WHERE id = #{id}
+    </update>
+
+    <delete id="deleteById">
+        DELETE FROM policy WHERE id = #{id}
+    </delete>
+
+</mapper>

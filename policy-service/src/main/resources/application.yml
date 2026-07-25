@@ -1,0 +1,43 @@
+server:
+  port: ${SERVER_PORT:8081}
+
+spring:
+  application:
+    name: policy-service
+
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:mysql://localhost:3306/toy_policy_db?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC}
+    username: ${SPRING_DATASOURCE_USERNAME:toy_app}
+    password: ${SPRING_DATASOURCE_PASSWORD:toy_app_pw}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+  data:
+    redis:
+      host: ${SPRING_REDIS_HOST:localhost}
+      port: ${SPRING_REDIS_PORT:6379}
+
+  cache:
+    type: redis
+    redis:
+      time-to-live: 300000 # 5分钟，详情缓存过期时间
+
+  liquibase:
+    change-log: classpath:db/changelog/db.changelog-master.xml
+
+mybatis:
+  mapper-locations: classpath:mapper/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    com.toysystem.policy: DEBUG

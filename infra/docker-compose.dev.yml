@@ -1,0 +1,36 @@
+# 本地开发环境中间件。业务服务不在这里跑（用 mvn spring-boot:run / npm run dev 直接跑，方便调试）。
+# 当前只包含 P1 阶段需要的 MySQL + Redis；Kafka/ES 会在 P3/P4 阶段加入。
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: toy-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: toy_policy_db
+      MYSQL_USER: toy_app
+      MYSQL_PASSWORD: toy_app_pw
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7
+    container_name: toy-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  mysql-data:

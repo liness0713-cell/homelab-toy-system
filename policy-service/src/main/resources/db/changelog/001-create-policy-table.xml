@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+
+    <changeSet id="001-create-policy-table" author="claude-code">
+        <createTable tableName="policy">
+            <column name="id" type="BIGINT" autoIncrement="true">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="policy_no" type="VARCHAR(32)">
+                <constraints nullable="false" unique="true" uniqueConstraintName="uk_policy_policy_no"/>
+            </column>
+            <column name="holder_name" type="VARCHAR(64)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="product_type" type="VARCHAR(16)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="premium" type="DECIMAL(12,2)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="status" type="VARCHAR(16)" defaultValue="DRAFT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="created_at" type="DATETIME" defaultValueComputed="CURRENT_TIMESTAMP">
+                <constraints nullable="false"/>
+            </column>
+            <column name="updated_at" type="DATETIME" defaultValueComputed="CURRENT_TIMESTAMP">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+
+        <createIndex indexName="idx_policy_holder_name" tableName="policy">
+            <column name="holder_name"/>
+        </createIndex>
+    </changeSet>
+
+</databaseChangeLog>
