@@ -1,25 +1,30 @@
 # policy-service
 
-迷你保单系统的核心写服务。当前阶段（P1）职责：
+迷你保单系统的核心写服务。当前职责：
 - 保单 CRUD（创建 / 查询详情 / 列表 / 更新 / 取消 / 删除）
 - 详情查询（`GET /api/policies/{id}`）走 Redis 缓存，更新/取消时刷新缓存
 - 表结构由 Liquibase 管理（`src/main/resources/db/changelog/`），启动时自动建表/迁移，不手写建表逻辑
+- （P3新增）创建/更新/取消保单时，通过 `EventPublisher` 往 `policy-events` topic 发一条事件
+  （见 `src/main/java/com/toysystem/policy/event/`）。这里特意把"发事件"单独封装成一个接口
+  （`EventPublisher` / `KafkaEventPublisher`），P9阶段要换成Canal监听binlog触发时，只需要换掉
+  "谁来调用publish"这一层，事件本身和下游消费者都不用动
 
-Kafka 事件发布（`policy-events`）会在 P3 阶段加入，本阶段暂不涉及。
+事件格式契约见 `docs/kafka-event-schema.md`。
 
 ## 技术栈
 
-Spring Boot 3.3 + MyBatis + Liquibase + MySQL 8 + Redis 7，Java 21。
+Spring Boot 3.3 + MyBatis + Liquibase + MySQL 8 + Redis 7 + Kafka，Java 21。
 
 ## 依赖的中间件
 
 - MySQL（`toy_policy_db` 库）
 - Redis
+- Kafka（`policy-events` topic，3分区）
 
 本地用 `infra/docker-compose.dev.yml` 拉起：
 
 ```bash
-docker compose -f infra/docker-compose.dev.yml up -d mysql redis
+docker compose -f infra/docker-compose.dev.yml up -d mysql redis kafka
 ```
 
 ## 本地单独运行
@@ -40,6 +45,7 @@ mvn spring-boot:run
 | `SPRING_DATASOURCE_PASSWORD` | `toy_app_pw` |
 | `SPRING_REDIS_HOST` | `localhost` |
 | `SPRING_REDIS_PORT` | `6379` |
+| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` |
 
 ## 暴露的端口 / API
 

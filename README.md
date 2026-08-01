@@ -9,7 +9,7 @@
 - [x] P1 — `policy-service`（MySQL + Redis + Liquibase + MyBatis），本地CRUD跑通
 - [x] P2 — `gateway-service`（JWT鉴权）+ `frontend`（登录+列表页），本地全链路跑通；
       k3s里卸载Traefik、换装 `ingress-nginx`（业务服务还没接进k3s，见 `infra/k8s/ingress-nginx-demo/README.md`）
-- [ ] P3 — Kafka + `notification-service`
+- [x] P3 — Kafka（KRaft单节点）+ `policy-service` 发 `policy-events` + `notification-service` 消费，验证过"同一个事件、独立消费者"的解耦
 - [ ] P4 — Elasticsearch + `search-service`（CQRS）
 - [ ] P5 及以后 —— 见规划文档第5节
 
@@ -18,13 +18,16 @@
 ```
 homelab-toy-system/
 ├── infra/
-│   ├── docker-compose.dev.yml       # 本地开发中间件（MySQL/Redis，后续加Kafka/ES）
+│   ├── docker-compose.dev.yml       # 本地开发中间件（MySQL/Redis/Kafka，ES在P4加入）
 │   └── k8s/
 │       └── ingress-nginx-demo/      # P2: 验证ingress-nginx本身能工作的demo，非业务
-├── policy-service/                   # 核心写服务
+├── policy-service/                   # 核心写服务（发 policy-events）
 ├── gateway-service/                  # API网关（Spring Cloud Gateway + JWT）
+├── notification-service/             # policy-events 消费者A（模拟通知，无DB）
 ├── frontend/                         # React SPA（登录 + 保单列表）
-├── docs/                             # 设计文档
+├── docs/
+│   ├── homelab-toy-system-plan.md
+│   └── kafka-event-schema.md         # policy-events / report-events 的事件格式契约
 └── README.md
 ```
 
@@ -47,6 +50,9 @@ cd gateway-service && mvn spring-boot:run
 
 # 3. frontend（默认5173）
 cd frontend && npm install && npm run dev
+
+# 4. notification-service（默认8082，消费policy-events，纯打日志）
+cd notification-service && mvn spring-boot:run
 ```
 
 打开 `http://localhost:5173`，用 demo 账号 `admin / admin123` 登录。

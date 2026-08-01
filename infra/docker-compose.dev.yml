@@ -1,5 +1,5 @@
 # 本地开发环境中间件。业务服务不在这里跑（用 mvn spring-boot:run / npm run dev 直接跑，方便调试）。
-# 当前只包含 P1 阶段需要的 MySQL + Redis；Kafka/ES 会在 P3/P4 阶段加入。
+# P1: MySQL + Redis。P3: 加了Kafka（KRaft单节点）。ES 会在 P4 阶段加入。
 services:
   mysql:
     image: mysql:8.4
@@ -32,5 +32,36 @@ services:
       timeout: 5s
       retries: 20
 
+  kafka:
+    # bitnami/kafka 的免费tag在2025年的Bitnami镜像调整后已经下架，改用官方 apache/kafka 镜像
+    # （Kafka 3.7+ 官方开始发布，原生支持KRaft，不用再额外装Zookeeper）。
+    image: apache/kafka:4.2.1
+    container_name: toy-kafka
+    restart: unless-stopped
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      # 业务服务都跑在宿主机上（不在compose网络里），所以只需要一个对外的PLAINTEXT监听器，
+      # 不用像"容器互相访问"场景那样搞内外两套listener。
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+
 volumes:
   mysql-data:
+  kafka-data:

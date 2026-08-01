@@ -2,6 +2,9 @@ package com.toysystem.policy.service;
 
 import com.toysystem.policy.dto.CreatePolicyRequest;
 import com.toysystem.policy.dto.UpdatePolicyRequest;
+import com.toysystem.policy.event.EventPublisher;
+import com.toysystem.policy.event.PolicyEvent;
+import com.toysystem.policy.event.PolicyEventType;
 import com.toysystem.policy.exception.PolicyNotFoundException;
 import com.toysystem.policy.mapper.PolicyMapper;
 import com.toysystem.policy.model.Policy;
@@ -23,6 +26,7 @@ public class PolicyService {
     private static final String CACHE_NAME = "policy-detail";
 
     private final PolicyMapper policyMapper;
+    private final EventPublisher eventPublisher;
 
     public Policy create(CreatePolicyRequest request) {
         LocalDateTime now = LocalDateTime.now();
@@ -36,6 +40,7 @@ public class PolicyService {
         policy.setUpdatedAt(now);
 
         policyMapper.insert(policy);
+        eventPublisher.publish(PolicyEvent.of(PolicyEventType.POLICY_CREATED, policy));
         return policy;
     }
 
@@ -65,6 +70,7 @@ public class PolicyService {
         existing.setUpdatedAt(LocalDateTime.now());
 
         policyMapper.update(existing);
+        eventPublisher.publish(PolicyEvent.of(PolicyEventType.POLICY_UPDATED, existing));
         return existing;
     }
 
@@ -79,6 +85,7 @@ public class PolicyService {
         existing.setUpdatedAt(LocalDateTime.now());
 
         policyMapper.update(existing);
+        eventPublisher.publish(PolicyEvent.of(PolicyEventType.POLICY_CANCELLED, existing));
         return existing;
     }
 
