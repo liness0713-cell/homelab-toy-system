@@ -9,11 +9,17 @@
   （`EventPublisher` / `KafkaEventPublisher`），P9阶段要换成Canal监听binlog触发时，只需要换掉
   "谁来调用publish"这一层，事件本身和下游消费者都不用动
 
-事件格式契约见 `docs/kafka-event-schema.md`。
+事件格式契约见 `docs/kafka-event-schema.md`。消息体的Java类（`PolicyEvent`）定义在共享模块
+`../event-contracts/` 里，`notification-service`等消费者引用的是同一个类，不是各自维护一份
+（P3踩坑后的修订，见该模块的README）。`PolicyEventFactory`（本服务内部）负责把内部实体
+`Policy`转换成这个共享的`PolicyEvent`——这层转换必须留在这里，`event-contracts`不能反过来
+依赖本服务的实体类。
 
 ## 技术栈
 
-Spring Boot 3.3 + MyBatis + Liquibase + MySQL 8 + Redis 7 + Kafka，Java 21。
+Spring Boot 3.3 + MyBatis + Liquibase + MySQL 8 + Redis 7 + Kafka，Java 21。这是一个Maven多
+模块项目的子模块（父pom在仓库根目录），第一次构建前要先在根目录跑一次 `mvn install`
+（把 `event-contracts` 装进本地仓库），见根目录 `README.md`。
 
 ## 依赖的中间件
 

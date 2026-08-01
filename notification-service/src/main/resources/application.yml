@@ -11,17 +11,19 @@ spring:
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       # 用ErrorHandlingDeserializer包一层：反序列化失败（比如遇到脏消息）时把异常放进record交给
       # 容器的错误处理器处理，而不是直接从Kafka客户端里抛出来——DefaultErrorHandler处理不了
-      # 后一种情况，会导致consumer卡在同一条消息上死循环重试，永远消费不下去。
+      # 后一种情况，会导致consumer卡在同一条消息上死循环重试，永远消费不下去（P3踩过的坑）。
       value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
       auto-offset-reset: earliest
       properties:
         spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
-        spring.json.trusted.packages: com.toysystem.notification.event
-        spring.json.value.default.type: com.toysystem.notification.event.PolicyEvent
-        # policy-service的JsonSerializer默认会把它自己的类名（com.toysystem.policy.event.PolicyEvent）
-        # 写进__TypeId__头；不同服务的类名本来就不该耦合，这里直接让consumer无视这个头，
-        # 永远用上面配置的 default.type 反序列化。
-        spring.json.use.type.headers: false
+        # 现在生产者和消费者共享同一个 event-contracts 模块里的PolicyEvent类（同一个FQCN），
+        # 不用再无视/伪造类型信息——直接信任生产者写进消息头的类名即可（use.type.headers默认就是true）。
+        spring.json.trusted.packages: com.toysystem.event
+    producer:
+      # 供 DeadLetterPublishingRecoverer 用：反序列化/业务处理失败重试用尽后，把原始消息
+      # 转发到 <topic>.DLT，不能让它一直堵在原topic的这个offset上（见 KafkaErrorHandlingConfig）。
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
 
 management:
   endpoints:

@@ -1,4 +1,4 @@
-package com.toysystem.policy.event;
+package com.toysystem.event;
 
 public enum PolicyEventType {
     POLICY_CREATED,

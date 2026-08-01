@@ -6,6 +6,8 @@
 > 本文档是那份全景图的**具体落地版**：把抽象模块清单，转成一套真实可跑、互相依赖的代码工程。
 
 > **当前进度**：P1（policy-service + MySQL/Redis）、P2（gateway-service + frontend + JWT + ingress-nginx替换Traefik）、P3（Kafka + notification-service，双消费链路的第一条已跑通）已完成并commit。P4（Elasticsearch + search-service，CQRS）尚未开始。P5起用户计划自己动手，不再交给Claude Code自动化实现（详见第5节表格备注）。
+>
+> **待办修订（本次新增，仅需处理这一部分，不必重跑其他阶段）**：P3踩坑后决定改用父子Maven module + 共享`event-contracts`模块（2.1节），并给消费者补上死信Topic容错（6.1节、7.9节）。这两项需要对已完成的`policy-service`/`notification-service`代码做改造，而不是留到后续新服务再应用。
 
 ---
 
@@ -74,11 +76,14 @@ Policy（保单）
 
 ```
 homelab-toy-system/
+├── pom.xml                          # 父pom（聚合各Java模块，定义共享依赖版本）
+├── event-contracts/                 # 共享Maven模块：Kafka事件的Java类定义（PolicyEvent等）
+│   └── src/main/java/.../event/PolicyEvent.java
 ├── frontend/                      # React SPA
 ├── gateway-service/                # Spring Cloud Gateway
-├── policy-service/                 # 核心写服务
-├── notification-service/           # Kafka消费者A
-├── search-service/                  # Kafka消费者B + ES读服务
+├── policy-service/                 # 核心写服务（依赖event-contracts）
+├── notification-service/           # Kafka消费者A（依赖event-contracts）
+├── search-service/                  # Kafka消费者B + ES读服务（依赖event-contracts）
 ├── infra/
 │   ├── docker-compose.dev.yml     # 本地开发中间件：MySQL/Redis/Kafka/ES/Kibana
 │   ├── k8s/                        # k3s部署清单（每服务一个子目录）
@@ -99,6 +104,17 @@ homelab-toy-system/
 ```
 
 **给Claude Code的约定**：每个服务子目录下必须有自己的 `README.md`，写清楚：这个服务是干什么的、怎么本地单独跑、依赖哪些中间件、暴露哪些端口/API。
+
+### 2.1 修订：Java服务改用父子Maven module，共享事件契约类（`event-contracts`）
+
+**背景**：P3阶段暴露了一个真实问题——`policy-service`和`notification-service`各自维护一份独立的`PolicyEvent.java`（包名不同、内容靠人工保持一致），这正是"坑1"（`not in the trusted packages`）的根源：两边对同一份JSON契约各写各的类，类名注定对不上，只能靠`spring.json.use.type.headers=false`绕过去，但"两份类容易失步"这个风险还在，没有从根上解决。
+
+**修订决定**：新建一个独立的Maven模块 `event-contracts`，专门存放Kafka事件相关的Java类（`PolicyEvent`及后续`ReportEvent`等），`policy-service`（生产者）、`notification-service`/`search-service`（消费者）都以Maven依赖的方式引用**同一个类**，而不是各自维护一份。
+
+- 根目录新增一个聚合用的父`pom.xml`（`<packaging>pom</packaging>`，`<modules>`里列出`event-contracts`和各个Java服务），管理公共依赖版本（Spring Boot版本、Kafka client版本等），避免各服务各自锁不同版本导致序列化行为不一致。
+- 各服务的`pom.xml`改为以这个父pom为`<parent>`，并添加对`event-contracts`的依赖。
+- **这个决定的取舍**：好处是彻底消灭"两份类不一致"这类问题，且更贴近真实企业项目里"公共契约包"的常见做法；代价是引入了Maven多模块的一点复杂度（构建顺序、`mvn install`共享模块到本地仓库这些概念）——权衡下来，既然坑1已经真实发生过，用父子module从根上解决比反复靠配置绕开更值得，所以在此处调整早前"不做父子module"的决定。
+- 需要注意：`gateway-service`如果不直接处理`PolicyEvent`对象（只做HTTP层转发），可以不依赖`event-contracts`，不必强行让所有服务都挂上这个依赖。
 
 ---
 
@@ -274,6 +290,16 @@ StatefulSet+PV是K8s管理有状态服务的原生机制，虽然3.2节决定不
 }
 ```
 
+topic名：`policy-events`（单topic多事件类型，通过 `eventType` 字段分流，符合大部分Kafka事件设计的实践）。类定义统一放在共享模块 `event-contracts` 里（见2.1节），生产者/消费者引用同一个`PolicyEvent`类，不再各自维护一份。
+
+### 6.1 消费者容错：反序列化错误处理 + 死信Topic（Dead Letter Topic）
+
+P3实测中遇到过消费者被一条"毒药消息"（poison pill，格式错误、反序列化失败的消息）卡死在同一个offset无限重试的问题。修订决定：**这次直接做完整，不再只做最小修复**，具体两层：
+
+1. **反序列化层**：消费者的value-deserializer统一包一层`ErrorHandlingDeserializer`（委托给真正干活的`JsonDeserializer`），确保反序列化失败时异常能被正常交给listener容器的错误处理器,而不是直接从Kafka客户端库内部爆出来导致死循环。
+2. **业务处理层 + 死信Topic**：消费者的错误处理器统一配置为`DefaultErrorHandler`搭配`FixedBackOff`（重试固定次数，比如3次，每次间隔1秒）和`DeadLetterPublishingRecoverer`——重试用尽后，这条消息（包括反序列化失败、以及业务代码抛异常两种情况）会被自动发布到一个专门的死信topic（约定命名`<原topic名>.DLT`，即`policy-events.DLT`），而不是无限卡在原topic的这个offset上，让流水线能继续往下处理后面的正常消息。
+3. **死信topic目前只做到"消息不再堵塞主流程、进了死信队列"这一步**，不强制要求做人工重放/告警通知（那属于更进阶的运维能力，可以留到以后想深入时再加），但`report-service`/`search-service`引入类似消费者时也要照此模式配置，保持一致。
+
 topic名：`policy-events`（单topic多事件类型，通过 `eventType` 字段分流，符合大部分Kafka事件设计的实践）。
 
 **P9阶段新增 `report-events` topic**（由Canal监听宿主机MySQL binlog产生，格式对齐ZorroEvent的思路——用统一事件协议封装binlog变更，而不是照搬上面`policy-events`这套应用层事件schema）：
@@ -295,7 +321,7 @@ topic名：`policy-events`（单topic多事件类型，通过 `eventType` 字段
 
 ## 7. 给 Claude Code 的落地要求（编码前须知）
 
-1. 每个服务独立的 `pom.xml` / `package.json`，不做成父子module（保持简单，避免Maven多模块的复杂度干扰主线学习目标）。
+1. **Java服务采用父子Maven module**：根目录一个聚合父pom，`event-contracts`作为共享模块存放Kafka事件类，`policy-service`/`notification-service`/`search-service`都以Maven依赖方式引用同一个类，不再各自维护一份重复定义（详见2.1节，这是P3踩坑后的修订，原先"每个服务独立pom"的决定在此处调整）。`frontend`（Node生态）和不直接处理事件对象的服务不受影响。
 2. 所有服务的配置（数据库连接串、Kafka地址、Redis地址）通过环境变量注入，不要硬编码——本地跑用 `.env` 或 IDE 的 run configuration，k3s里用ConfigMap/Secret。
 3. 每个服务提供一个 `/actuator/health`（Spring Boot Actuator）,为后续接Prometheus做准备（P6阶段直接能用，不用返工）。
 4. `policy-service` 发Kafka事件的代码要单独封装成一个 `EventPublisher` 类，P9阶段替换成Canal时，只需要把"谁来触发发送事件"这一层换掉，`EventPublisher`本身和下游消费者不用动——这是为了让P9那次"改造对比"有意义,而不是重写一遍。
@@ -303,6 +329,7 @@ topic名：`policy-events`（单topic多事件类型，通过 `eventType` 字段
 6. `policy-service` 的表结构变更一律通过Liquibase changelog管理，不允许在Java代码里手写"检测表是否存在、不存在就CREATE TABLE"的逻辑。
 7. P5阶段k3s里指向宿主机MySQL/Redis的"无selector Service + Endpoints"配置，单独写清楚在 `infra/k8s/middleware/external-services.yaml`，并在该文件顶部用注释说明"这模拟的是云托管数据库，指向宿主机IP"，方便回头复习时一眼看懂意图。
 8. P2阶段部署Ingress前，先确认并卸载k3s自带的Traefik（k3s安装参数或`kubectl -n kube-system delete`处理，具体以Claude Code实测为准），再用Helm装`ingress-nginx`，避免两个Ingress Controller同时抢80/443端口冲突。
+9. **消费者统一配置死信Topic容错**（详见6.1节）：`ErrorHandlingDeserializer` + `DefaultErrorHandler`(`FixedBackOff` + `DeadLetterPublishingRecoverer`)，死信topic命名约定`<原topic名>.DLT`。这是对已完成的`notification-service`的补充修订，请针对现有代码改造，而不是只在后续新服务里应用。
 
 ---
 
@@ -314,3 +341,5 @@ topic名：`policy-events`（单topic多事件类型，通过 `eventType` 字段
 - **表结构迁移工具**：Liquibase（对齐公司实践）。
 - **报表库**：ClickHouse（而非继续镜像到MySQL），体验OLAP列式存储优势（详见P9）。
 - **集群入口**：用 `ingress-nginx` 替换k3s默认自带的Traefik，对齐实际生产用nginx做集群入口的经验（详见3.5节，P2引入）。
+- **Java模块结构**：改用父子Maven module，共享`event-contracts`模块存放Kafka事件类，替代早前"每个服务独立pom"的决定（详见2.1节，P3踩坑后修订）。
+- **消费者容错**：统一加上死信Topic（`<topic>.DLT`），重试用尽后不再无限阻塞主流程（详见6.1节）。

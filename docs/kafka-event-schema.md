@@ -13,6 +13,14 @@
 
 两个消费者用**不同的consumer group**，各自拿到同一份消息的完整拷贝——这是"同一份事件，两种独立消费策略"的关键，对应全景图11.1节的设计思想。
 
+消息体的Java类定义（`PolicyEvent`/`PolicyEventType`）在共享Maven模块 `event-contracts` 里，
+生产者和消费者引用同一个类，不是各自维护一份（P3踩坑后的修订，见 `event-contracts/README.md`）。
+
+**消费失败容错**：消费者统一配置 `ErrorHandlingDeserializer` + `DefaultErrorHandler`
+（固定次数重试 + `DeadLetterPublishingRecoverer`），重试用尽后原始消息转发到死信topic
+`policy-events.DLT`，不会卡住主流程。新增消费者也要照此模式配置，详见
+`notification-service/README.md`"死信Topic容错"一节。
+
 ```json
 {
   "eventId": "uuid",

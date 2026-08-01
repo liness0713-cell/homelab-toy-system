@@ -10,6 +10,8 @@
 - [x] P2 — `gateway-service`（JWT鉴权）+ `frontend`（登录+列表页），本地全链路跑通；
       k3s里卸载Traefik、换装 `ingress-nginx`（业务服务还没接进k3s，见 `infra/k8s/ingress-nginx-demo/README.md`）
 - [x] P3 — Kafka（KRaft单节点）+ `policy-service` 发 `policy-events` + `notification-service` 消费，验证过"同一个事件、独立消费者"的解耦
+- [x] P3修订 — 改用父子Maven module + 共享`event-contracts`模块（根治"两份类不一致"的坑1）；
+      `notification-service`补上死信Topic容错（`ErrorHandlingDeserializer` + `DefaultErrorHandler` + `DeadLetterPublishingRecoverer`，坑2的完整方案）
 - [ ] P4 — Elasticsearch + `search-service`（CQRS）
 - [ ] P5 及以后 —— 见规划文档第5节
 
@@ -17,13 +19,15 @@
 
 ```
 homelab-toy-system/
+├── pom.xml                           # 聚合父pom（只聚合下面这几个需要共享契约的Java服务）
+├── event-contracts/                  # 共享Maven模块：Kafka事件的Java类定义（PolicyEvent等）
 ├── infra/
 │   ├── docker-compose.dev.yml       # 本地开发中间件（MySQL/Redis/Kafka，ES在P4加入）
 │   └── k8s/
 │       └── ingress-nginx-demo/      # P2: 验证ingress-nginx本身能工作的demo，非业务
-├── policy-service/                   # 核心写服务（发 policy-events）
-├── gateway-service/                  # API网关（Spring Cloud Gateway + JWT）
-├── notification-service/             # policy-events 消费者A（模拟通知，无DB）
+├── policy-service/                   # 核心写服务（发 policy-events，依赖event-contracts）
+├── gateway-service/                  # API网关（Spring Cloud Gateway + JWT，独立pom，不依赖event-contracts）
+├── notification-service/             # policy-events 消费者A（模拟通知，无DB，依赖event-contracts）
 ├── frontend/                         # React SPA（登录 + 保单列表）
 ├── docs/
 │   ├── homelab-toy-system-plan.md
@@ -39,13 +43,20 @@ homelab-toy-system/
 docker compose -f infra/docker-compose.dev.yml up -d
 ```
 
+`policy-service`/`notification-service`（以及后续的`search-service`）依赖共享模块
+`event-contracts`，第一次跑、或者改了`event-contracts`之后，需要先在**仓库根目录**装一次：
+
+```bash
+mvn -q -DskipTests install   # 把 event-contracts 装进本地 ~/.m2 仓库
+```
+
 然后按顺序启动业务服务（都不进容器，方便调试）：
 
 ```bash
 # 1. policy-service（默认8081）
 cd policy-service && mvn spring-boot:run
 
-# 2. gateway-service（默认8080，代理到policy-service）
+# 2. gateway-service（默认8080，代理到policy-service；独立Maven项目，不受上面mvn install影响）
 cd gateway-service && mvn spring-boot:run
 
 # 3. frontend（默认5173）

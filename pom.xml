@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.3.5</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>com.toysystem</groupId>
+  <artifactId>homelab-toy-system</artifactId>
+  <version>0.1.0</version>
+  <packaging>pom</packaging>
+  <name>homelab-toy-system</name>
+  <description>
+    聚合父pom。只聚合需要共享 event-contracts 契约模块的Java服务；
+    gateway-service（不处理PolicyEvent对象，只做HTTP转发）和 frontend（Node生态）
+    仍然各自独立，不受这次父子module改造影响（详见 docs/homelab-toy-system-plan.md 2.1节）。
+  </description>
+
+  <modules>
+    <module>event-contracts</module>
+    <module>policy-service</module>
+    <module>notification-service</module>
+  </modules>
+
+  <properties>
+    <java.version>21</java.version>
+    <mybatis-spring-boot.version>3.0.3</mybatis-spring-boot.version>
+  </properties>
+
+</project>
