@@ -5,6 +5,8 @@
 > 把 `大型分布式系统_全景模块图.md` 里列出的中间件逐一练到，尤其是CDC/CQRS/CI-CD这条主线。
 > 本文档是那份全景图的**具体落地版**：把抽象模块清单，转成一套真实可跑、互相依赖的代码工程。
 
+> **当前进度**：P1（policy-service + MySQL/Redis）、P2（gateway-service + frontend + JWT + ingress-nginx替换Traefik）、P3（Kafka + notification-service，双消费链路的第一条已跑通）已完成并commit。P4（Elasticsearch + search-service，CQRS）尚未开始。P5起用户计划自己动手，不再交给Claude Code自动化实现（详见第5节表格备注）。
+
 ---
 
 ## 0. 设计原则
@@ -117,7 +119,7 @@ services:
     image: redis:7
     ports: ["6379:6379"]
   kafka:
-    image: bitnami/kafka:latest      # KRaft模式，不需要额外装Zookeeper
+    image: apache/kafka:latest       # KRaft模式，不需要额外装Zookeeper；bitnami/kafka的免费latest标签已下架，改用官方镜像
     ports: ["9092:9092"]
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.x
@@ -144,9 +146,17 @@ services:
 - 业务服务的镜像统一推到 **Harbor**，k3s 从 Harbor 拉镜像
 - 本地Docker build的镜像 ≠ k3s能直接用的镜像，需要 `docker push` 到 Harbor，k3s侧配置好 imagePullSecrets 指向Harbor（这一步会遇到"私有仓库鉴权"的实操，正好也是练习点）
 
-### 3.3 Namespace 规划
+### 3.3 Namespace 规划：业务与中间件分离
 
-给这套玩具系统单独开一个 `toy-system` namespace，跟k3s自带系统组件（`kube-system`）分开，方便管理和后续整体清理。所有业务服务、Kafka/ES的Helm release都部署进这个namespace。
+**修订**：不再把所有东西塞进同一个 `toy-system` namespace，改为按职责拆分：
+
+| Namespace | 内容 |
+|---|---|
+| `toy-system` | 业务服务本体：gateway-service、policy-service、notification-service、search-service、frontend |
+| `toy-infra` | 集群内跑的中间件：Kafka、Elasticsearch，以及P6引入的Prometheus/Grafana |
+| `ingress-nginx` | P2阶段已建立，装ingress-nginx本身，不用改动 |
+
+好处：权限/网络策略(NetworkPolicy)可以按namespace划分粒度（比如限制"业务服务只能访问toy-infra里的Kafka，不能互相访问对方的DB连接"，为以后想练零信任网络打基础）；清理/重建某一层（比如整个重装Kafka）不会牵连业务服务；`kubectl get pods -n toy-system` 一眼看到的都是业务相关的，不会和中间件Pod混在一起看花眼。
 
 ### 3.4 独立练习模块：StatefulSet + PersistentVolume（不在关键路径上）
 
@@ -173,6 +183,21 @@ StatefulSet+PV是K8s管理有状态服务的原生机制，虽然3.2节决定不
 **k3s默认自带的Ingress Controller其实是Traefik**（k3s安装时自动装好，不用额外操作就有）。但既然实际生产用的是nginx,为了让homelab经验更贴近真实工作场景，这里明确决定：**卸载/禁用k3s默认的Traefik，改装 `ingress-nginx`**（用Helm chart部署,官方chart名为 `ingress-nginx/ingress-nginx`）,让你写的Ingress YAML、遇到的注解(annotation)写法、调试思路,都能跟公司技术栈对上。
 
 这一步安排进 **P2阶段**，和 `gateway-service`/`frontend` 一起搭起来，因为这时候才第一次需要"外部怎么访问到集群里的东西"这个问题的答案。
+
+### 3.6 监控归属：Prometheus/Grafana 装在集群内，而非集群外
+
+**决策：Prometheus/Grafana 部署在k3s集群内部**（`toy-infra` namespace），而不是像Jenkins/Harbor那样放在宿主机外部。原因和CI/CD工具正好相反：
+
+- Jenkins/Harbor放集群外，是因为它们的职责是"修复/部署集群"——放集群内会有循环依赖（集群坏了，修复工具也跟着坏）。
+- **Prometheus只负责"观察"，不负责"修复"**，而且它需要频繁抓取(scrape)集群内每个Pod暴露的`/actuator/prometheus`指标端点——放在集群内部离目标更近，还能用K8s原生的Service Discovery自动发现新Pod，不用手动维护一堆外部IP。这也是`kube-prometheus-stack`这类Helm chart默认的部署方式。
+
+**这个决策有个真实的取舍要知道**：集群内监控有个明显缺陷——如果k3s本身挂了，Prometheus也跟着挂，恰恰在最需要知道"为什么挂了"的时候看不到任何东西。大公司的解法是"remote write"：集群内Prometheus只负责就近抓取，但把关键指标实时推到一个**集群外部、独立的时序数据库**（如Thanos/Mimir/Grafana Cloud）长期存，即使集群挂了，外部这份数据和告警依然可用。对单机homelab来说，这套"集群外远程存储"暂时不用搭（投入产出比不划算），只需要知道这是完整逻辑的一部分。
+
+**监控宿主机上的MySQL/Redis：** 这两个中间件跑在宿主机、不在k3s里（3.2节决策），集群内的Prometheus没法直接"看到"它们，需要额外在宿主机上装 **exporter**（`mysqld_exporter`、`redis_exporter`），暴露一个metrics端口，再用P5已经用过的"无selector Service"技巧，让集群内Prometheus通过Service DNS抓取它——跟连接宿主机MySQL是同一套模式，正好复用已经学过的机制，不用引入新概念。
+
+---
+
+## 4. CI/CD 流水线设计
 
 对应全景图第一节 + 十二节2.2（灰度发布可作为后续加练）。
 
@@ -216,9 +241,9 @@ StatefulSet+PV是K8s管理有状态服务的原生机制，虽然3.2节决定不
 | **P2** | 加 `gateway-service`，接JWT鉴权；加 `frontend` 登录+列表页；k3s里卸载默认Traefik、装 `ingress-nginx`，配好Ingress规则让外部能访问到gateway-service/frontend（详见3.5节） | 完整走一遍"外部→nginx-ingress→网关鉴权→后端"链路 |
 | **P3** | 本地docker-compose加Kafka；`policy-service`创建保单时发事件；写 `notification-service` 消费 | 体验"同一个事件，独立消费者"的解耦 |
 | **P4** | 本地加ES；写 `search-service` 消费同一事件写入ES，暴露搜索API；前端加搜索页 | 完整CQRS读写分离链路跑通 |
-| **P5** | 宿主机上用Docker常驻起MySQL/Redis（模拟云托管）；k3s里建`toy-system` namespace，通过"无selector Service"让业务服务连上宿主机MySQL/Redis；Kafka/ES用Helm单副本部署进k3s；所有业务服务部署到k3s（先`kubectl apply`手动部署，不接CI/CD） | "生产"环境跑通一次全链路，体验k3s连接外部依赖的方式 |
+| **P5（用户计划亲自动手实现，Claude Code在此阶段暂停自动化）** | 宿主机上用Docker常驻起MySQL/Redis（模拟云托管）；k3s里建`toy-system`（业务）和`toy-infra`（中间件）两个namespace；通过"无selector Service"让业务服务连上宿主机MySQL/Redis；Kafka/ES用Helm单副本部署进`toy-infra`；所有业务服务部署到`toy-system`（先`kubectl apply`手动部署，不接CI/CD） | "生产"环境跑通一次全链路，体验k3s连接外部依赖的方式；这一阶段由用户自己手写YAML/逐步调试，不交给Claude Code自动生成，目的是扎实练习K8s原生操作 |
 | **P5.5（插入式练习，不阻塞主线）** | 额外部署一个独立的MySQL StatefulSet+PV demo（不接业务数据） | 体验StatefulSet机制本身、Pod重建后数据还在 |
-| **P6** | **这时候再装Prometheus/Grafana**，因为已经有真实的服务和流量可以观察 | 看到真实的CPU/内存/QPS曲线，可以故意kill掉一个Pod观察自愈 |
+| **P6** | **这时候再装Prometheus/Grafana**（部署进`toy-infra` namespace），因为已经有真实的服务和流量可以观察；详见"6.5 监控归属"一节 | 看到真实的CPU/内存/QPS曲线，可以故意kill掉一个Pod观察自愈 |
 | **P7** | Gitea + Jenkins + Harbor，把P5的手动部署变成自动化流水线 | git push即部署，滚动发布跑通 |
 | **P8** | EFK日志链路接入这几个服务 | 排查问题时能查日志而不是`kubectl logs`挨个看 |
 | **P9（进阶）** | 引入Canal监听宿主机MySQL的binlog，**新增独立的 `report-events` topic + `report-service`**：Canal发到`report-events`，`report-service`消费后把事件还原成SQL、镜像写入**ClickHouse**（而不是MySQL，体验OLAP列式存储的聚合查询优势）。原有`policy-service`手动发`policy-events`（给notification/search用）保留不变，两条链路并存对比 | 完整复刻Zorro BLCS"同一份binlog、两条独立消费管道"的设计思想（全景图11.1），顺带体验ClickHouse vs MySQL的聚合查询差异（12.5/13.1） |
