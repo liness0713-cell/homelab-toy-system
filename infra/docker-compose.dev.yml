@@ -1,5 +1,5 @@
 # 本地开发环境中间件。业务服务不在这里跑（用 mvn spring-boot:run / npm run dev 直接跑，方便调试）。
-# P1: MySQL + Redis。P3: 加了Kafka（KRaft单节点）。ES 会在 P4 阶段加入。
+# P1: MySQL + Redis。P3: 加了Kafka（KRaft单节点）。P4: 加了Elasticsearch + Kibana。
 services:
   mysql:
     image: mysql:8.4
@@ -88,6 +88,39 @@ services:
       kafka:
         condition: service_healthy
 
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.19
+    container_name: toy-elasticsearch
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      # 本地开发简化：关掉需要TLS证书+账号密码的安全模块，不然本地起一个ES还要先搞证书。
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.19.19
+    container_name: toy-kibana
+    restart: unless-stopped
+    environment:
+      # Kibana自己跑在compose网络里，用容器名访问ES；跟kafka-ui访问kafka是同一个道理。
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
 volumes:
   mysql-data:
   kafka-data:
+  es-data:

@@ -1,11 +1,12 @@
 # gateway-service
 
-迷你保单系统的API网关。当前阶段（P2）职责：
-- 反向代理 `/api/policies/**` 到 `policy-service`
+迷你保单系统的API网关。当前职责：
+- 反向代理 `/api/policies/**` 到 `policy-service`，`/api/search/**` 到 `search-service`（P4新增，只读搜索）
 - JWT鉴权：除 `/auth/login`、`/actuator/**` 外，所有请求必须携带合法的 `Authorization: Bearer <token>`
 - 校验通过后把用户名透传给下游服务（`X-Auth-User` 头），下游信任网关，不用重复验证token
 
-限流（Sentinel等）不在P2范围内，留作后续加练。
+限流（Sentinel等）不在范围内，留作后续加练。这个服务不处理`PolicyEvent`对象，只做HTTP层
+转发，所以不依赖共享模块`event-contracts`，也没加入根目录的Maven多模块聚合（独立pom）。
 
 ## 技术栈
 
@@ -13,7 +14,7 @@ Spring Boot 3.3 + Spring Cloud Gateway（WebFlux）+ jjwt，Java 21。
 
 ## 依赖
 
-- 无独立DB/Redis；依赖 `policy-service` 已经在跑（默认 `http://localhost:8081`）
+- 无独立DB/Redis；依赖 `policy-service`（默认 `http://localhost:8081`）、`search-service`（默认 `http://localhost:8083`）已经在跑
 - 没有独立的用户服务，登录账号硬编码在 `InMemoryUserStore`：`admin / admin123`（仅demo用，见 `security/InMemoryUserStore.java` 顶部注释）
 
 ## 本地单独运行
@@ -30,6 +31,7 @@ mvn spring-boot:run
 |---|---|
 | `SERVER_PORT` | `8080` |
 | `POLICY_SERVICE_URI` | `http://localhost:8081` |
+| `SEARCH_SERVICE_URI` | `http://localhost:8083` |
 | `JWT_SECRET` | 内置开发用默认值，生产必须覆盖 |
 | `JWT_EXPIRATION_MINUTES` | `60` |
 | `CORS_ALLOWED_ORIGIN_1` | `http://localhost:5173`（frontend本地开发端口） |
@@ -43,6 +45,7 @@ mvn spring-boot:run
 |---|---|---|
 | POST | `/auth/login` | `{"username","password"}` → `{"token","expiresInSeconds"}` |
 | GET/POST/PUT/DELETE | `/api/policies/**` | 代理到 `policy-service`，需要 `Authorization: Bearer <token>` |
+| GET | `/api/search/**` | 代理到 `search-service`（只读搜索，CQRS读路径），需要 `Authorization: Bearer <token>` |
 | GET | `/actuator/health` | 健康检查 |
 
 ## curl 示例

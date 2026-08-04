@@ -72,3 +72,13 @@ export function createPolicy(payload) {
 export function cancelPolicy(id) {
   return request(`/api/policies/${id}/cancel`, { method: "POST" });
 }
+
+export function searchPolicies(q) {
+  // URLSearchParams负责把中文/日文这类多字节字符正确percent-encode，
+  // 不然像"検索"这种原始UTF-8字符直接拼进URL，网关的Netty服务器会因为请求行不合法直接拒绝(400)。
+  const params = new URLSearchParams();
+  if (q) {
+    params.set("q", q);
+  }
+  return request(`/api/search/policies?${params.toString()}`);
+}

@@ -62,11 +62,6 @@ export default function PolicyListPage({ onLogout }) {
 
   return (
     <div className="page">
-      <header className="page-header">
-        <h1>保单列表</h1>
-        <button onClick={onLogout}>退出登录</button>
-      </header>
-
       <form className="card create-form" onSubmit={handleCreate}>
         <h2>创建保单</h2>
         <label>

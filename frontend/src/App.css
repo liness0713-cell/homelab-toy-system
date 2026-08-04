@@ -75,6 +75,23 @@ button:disabled {
   justify-content: space-between;
 }
 
+.tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.tab {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.tab.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
 .create-form {
   width: auto;
   flex-direction: row;

@@ -1,10 +1,12 @@
 # frontend
 
-迷你保单系统的前端SPA。当前阶段（P2）职责：
+迷你保单系统的前端SPA。当前职责：
 - 登录页（对接 `gateway-service` 的 `/auth/login`，拿JWT存到 `localStorage`）
 - 保单列表页（含一个简单的创建表单 + 取消按钮），所有业务请求都带 `Authorization: Bearer <token>` 打到网关
+- 搜索页（P4新增）：走 `search-service`（Elasticsearch）的只读搜索API，跟列表页读的
+  `policy-service`/MySQL是两条完全独立的路径——CQRS读写分离在界面上的体现
 
-搜索页（P4，CQRS读路径）不在本阶段范围内。
+登录后顶部有"保单列表"/"搜索"两个tab切换。
 
 ## 技术栈
 
@@ -33,10 +35,11 @@ npm run dev
 
 ```
 src/
-├── api/client.js        # fetch封装：登录、CRUD请求、token存取
+├── api/client.js        # fetch封装：登录、CRUD请求、搜索请求、token存取
 ├── pages/LoginPage.jsx
 ├── pages/PolicyListPage.jsx
-└── App.jsx               # 根据是否登录切换两个页面
+├── pages/SearchPage.jsx
+└── App.jsx               # 未登录显示登录页；登录后顶部tab切换列表/搜索两个页面
 ```
 
 ## 已知的CORS坑（写给自己看的，别踩第二次）
@@ -50,3 +53,13 @@ src/
 
 这个坑只有真的用浏览器跑一遍登录流程才会暴露——用curl测`/auth/login`和`/api/policies`
 都是200/401，看不出CORS问题（curl不发`Origin`头，也不做preflight）。
+
+## 搜索框输入中日文，一定要走 URLSearchParams（不是字符串拼接）
+
+`api/client.js`里的`searchPolicies(q)`用`URLSearchParams`来拼查询字符串，不是直接
+`` `?q=${q}` `` 拼接。原因：手动拼接会把"検索"这类多字节UTF-8字符原样塞进URL，
+而`gateway-service`底层是Netty（Reactor Netty的HTTP请求行解析比较严格），收到没有
+percent-encode的非ASCII字符会直接判定请求行不合法、返回 `400 Bad Request`——这一步
+甚至发生在JWT鉴权过滤器之前，所以404/401都不会看到，直接了当的问题。`URLSearchParams`
+会自动把这些字符正确编码成`%E6%A4%9C%E7%B4%A2`这种形式，浏览器的`fetch`本来也是这么处理的，
+只是这里要确保自己拼URL的地方别绕过这个机制。

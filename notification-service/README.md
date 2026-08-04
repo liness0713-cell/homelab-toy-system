@@ -59,8 +59,8 @@ P3实测踩过"一条毒药消息（poison pill）卡死consumer"的坑（见下
 2. **业务处理层 + 死信topic**（`config/KafkaErrorHandlingConfig.java`）：`DefaultErrorHandler`
    配 `FixedBackOff(1000ms, 3次)` + `DeadLetterPublishingRecoverer`——反序列化失败或
    `@KafkaListener`方法抛异常，都会重试3次（每次间隔1秒），重试用尽后原始消息被转发到
-   `policy-events.DLT`，consumer的offset正常往前走，不会卡住后面的正常消息。
-3. **死信topic显式声明**（`config/KafkaTopicConfig.java`）：`policy-events.DLT`，1个分区
+   `policy-events.notification-service.DLT`，consumer的offset正常往前走，不会卡住后面的正常消息。
+3. **死信topic显式声明**（`config/KafkaTopicConfig.java`）：`policy-events.notification-service.DLT`，1个分区
    （死信量预期很小，不用跟原topic的3分区对齐）。
 
 验证过两条路径都生效：
@@ -70,7 +70,13 @@ P3实测踩过"一条毒药消息（poison pill）卡死consumer"的坑（见下
   "Seeking to offset N"），重试用尽后同样进了DLT，消费者组的offset也确认推进、没有卡住
 
 死信topic目前只做到"消息不再堵塞主流程"这一步，没有做人工重放/告警通知（更进阶的运维能力，
-留到以后想深入时再加）。`search-service`等新消费者引入类似逻辑时，也要照这个模式配置。
+留到以后想深入时再加）。
+
+**死信topic名字带上了消费者组名**（`policy-events.notification-service.DLT`，而不是默认的
+`policy-events.DLT`）：P4阶段 `search-service` 也订阅了同一个 `policy-events` topic、用的是
+自己独立的消费者组。如果两边失败的消息都堆到同一个默认死信topic里，排查问题时没法一眼看出
+这条死信消息到底是谁处理失败的——所以每个消费者组的死信topic都带上自己的名字，`search-service`
+那边也是同一个约定（见其README）。
 
 ## 已知的坑（写给自己看的，别踩第二次）
 
@@ -99,7 +105,7 @@ P3实测踩过"一条毒药消息（poison pill）卡死consumer"的坑（见下
 ### 坑3（小坑）：DLT分区数和原topic对不上，Recoverer报无害的WARN
 
 `DeadLetterPublishingRecoverer`默认想把死信消息发到"跟原消息相同分区号"的DLT分区。
-`policy-events`有3个分区，但`policy-events.DLT`只开了1个分区（死信量预期很小），
+`policy-events`有3个分区，但`policy-events.notification-service.DLT`只开了1个分区（死信量预期很小），
 分区号2/1对1分区的DLT来说不存在，会打一条 `Destination resolver returned non-existent
 partition` 的WARN（消息其实还是发成功了，Kafka自己兜底选了个分区）。修法：给
 `DeadLetterPublishingRecoverer`显式传一个目标解析函数，分区号写`-1`，明确告诉它"不用

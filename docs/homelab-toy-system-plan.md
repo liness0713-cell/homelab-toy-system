@@ -5,9 +5,7 @@
 > 把 `大型分布式系统_全景模块图.md` 里列出的中间件逐一练到，尤其是CDC/CQRS/CI-CD这条主线。
 > 本文档是那份全景图的**具体落地版**：把抽象模块清单，转成一套真实可跑、互相依赖的代码工程。
 
-> **当前进度**：P1（policy-service + MySQL/Redis）、P2（gateway-service + frontend + JWT + ingress-nginx替换Traefik）、P3（Kafka + notification-service，双消费链路的第一条已跑通）已完成并commit。P4（Elasticsearch + search-service，CQRS）尚未开始。P5起用户计划自己动手，不再交给Claude Code自动化实现（详见第5节表格备注）。
->
-> **待办修订（本次新增，仅需处理这一部分，不必重跑其他阶段）**：P3踩坑后决定改用父子Maven module + 共享`event-contracts`模块（2.1节），并给消费者补上死信Topic容错（6.1节、7.9节）。这两项需要对已完成的`policy-service`/`notification-service`代码做改造，而不是留到后续新服务再应用。
+> **当前进度**：P1（policy-service + MySQL/Redis）、P2（gateway-service + frontend + JWT + ingress-nginx替换Traefik）、P3（Kafka + notification-service，双消费链路的第一条已跑通，含2.1/6.1/7.9节修订：父子Maven module + 共享`event-contracts`模块、消费者死信Topic容错）、P4（Elasticsearch + Kibana + search-service，双消费链路第二条打通，CQRS读写分离链路跑通，前端加了搜索页）均已完成并commit。P5起用户计划自己动手，不再交给Claude Code自动化实现（详见第5节表格备注）。
 
 ---
 

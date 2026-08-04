@@ -12,6 +12,10 @@ spring:
           uri: ${POLICY_SERVICE_URI:http://localhost:8081}
           predicates:
             - Path=/api/policies/**
+        - id: search-service
+          uri: ${SEARCH_SERVICE_URI:http://localhost:8083}
+          predicates:
+            - Path=/api/search/**
 
 toy-system:
   jwt:

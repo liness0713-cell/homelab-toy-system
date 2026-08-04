@@ -26,6 +26,7 @@
     <module>event-contracts</module>
     <module>policy-service</module>
     <module>notification-service</module>
+    <module>search-service</module>
   </modules>
 
   <properties>
