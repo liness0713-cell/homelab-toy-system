@@ -43,17 +43,24 @@ services:
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      # 业务服务都跑在宿主机上（不在compose网络里），所以只需要一个对外的PLAINTEXT监听器，
-      # 不用像"容器互相访问"场景那样搞内外两套listener。
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      # 原来只有一个对外PLAINTEXT监听器，因为当时只有宿主机上的业务服务要连Kafka。
+      # 现在加了跑在compose网络里的kafka-ui，它需要通过容器间网络（服务名`kafka`）访问，
+      # 不能用"localhost:9092"这个只对宿主机有效的地址——所以拆成两个监听器：
+      # PLAINTEXT_HOST 给宿主机上的服务用，PLAINTEXT_INTERNAL 给同一个compose网络里的容器用。
+      KAFKA_LISTENERS: PLAINTEXT_HOST://0.0.0.0:9092,PLAINTEXT_INTERNAL://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT_HOST://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # 踩过的坑：apache/kafka镜像默认log.dirs是/tmp/kraft-combined-logs，跟下面挂载的卷
+      # 路径对不上——之前一直以为数据有持久化，其实容器一旦被recreate（不是简单重启）,
+      # /tmp下的数据就没了。显式把log.dirs指到卷挂载的路径上，两者才是真的对应上。
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
     volumes:
       - kafka-data:/var/lib/kafka/data
     healthcheck:
@@ -61,6 +68,25 @@ services:
       interval: 10s
       timeout: 10s
       retries: 15
+
+  kafka-ui:
+    # provectuslabs/kafka-ui 已经停更（最后一个版本停在2024年4月），项目转交给了社区维护的
+    # kafbat/kafka-ui，这里用这个还在活跃更新的fork。只是可视化工具，不是业务依赖。
+    image: kafbat/kafka-ui:v1.5.0
+    container_name: toy-kafka-ui
+    restart: unless-stopped
+    ports:
+      # 用9090而不是8080/8081/8082...这个连续区间——那段留给gateway-service/policy-service/
+      # notification-service/以后的search-service等业务服务用，这里特意避开。
+      - "9090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      # 走内部监听器 PLAINTEXT_INTERNAL（kafka:29092），因为这个UI本身跑在compose网络里，
+      # 不是宿主机上的服务，不能用"localhost:9092"那个只对宿主机有效的地址。
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    depends_on:
+      kafka:
+        condition: service_healthy
 
 volumes:
   mysql-data:

@@ -12,6 +12,8 @@
 - [x] P3 — Kafka（KRaft单节点）+ `policy-service` 发 `policy-events` + `notification-service` 消费，验证过"同一个事件、独立消费者"的解耦
 - [x] P3修订 — 改用父子Maven module + 共享`event-contracts`模块（根治"两份类不一致"的坑1）；
       `notification-service`补上死信Topic容错（`ErrorHandlingDeserializer` + `DefaultErrorHandler` + `DeadLetterPublishingRecoverer`，坑2的完整方案）
+- [x] Kafka运维可视化 — 本地加了 `kafka-ui`（`http://localhost:9090`），顺带修复了一个真实的
+      持久化bug：Kafka数据卷路径一直挂错了地方，之前"重启数据还在"只是因为容器没被真正recreate过
 - [ ] P4 — Elasticsearch + `search-service`（CQRS）
 - [ ] P5 及以后 —— 见规划文档第5节
 
@@ -67,6 +69,23 @@ cd notification-service && mvn spring-boot:run
 ```
 
 打开 `http://localhost:5173`，用 demo 账号 `admin / admin123` 登录。
+
+## Kafka 可视化：kafka-ui
+
+`docker compose up -d` 会顺带拉起 `kafka-ui`（`http://localhost:9090`），可以在浏览器里看
+topic列表、分区、消息内容、consumer group消费进度——比一堆 `kafka-topics.sh`/`kafka-console-consumer.sh`
+命令行直观很多，排查"消息发了没、消费到哪了、死信topic里堆了什么"这类问题很好用。
+
+端口选的`9090`，不是紧挨着业务服务的`8080`往后数（那段留给gateway-service/policy-service/
+notification-service/以后的search-service等，避免以后新服务撞端口）。
+
+**踩过的坑**：`apache/kafka`镜像默认把数据写到镜像自带的`/tmp/kraft-combined-logs`，跟
+`docker-compose.dev.yml`里挂载的卷路径`/var/lib/kafka/data`完全对不上。这意味着从P3到现在，
+Kafka数据其实一直没有真正持久化到卷里——只是因为容器一直没有被`docker compose up`重新创建过
+（改配置触发recreate才会暴露这个问题），"数据还在"只是**容器没被换掉**的假象，不是持久化生效。
+加`kafka-ui`这次因为要改监听器配置、必然触发容器recreate，直接暴露了这个问题，测试数据也因此
+丢了一次（都是本地测试数据，无所谓，但教训要记住）。现在已经显式加了`KAFKA_LOG_DIRS`环境变量
+把两边对齐，并且用"真的删掉容器再重建"验证过数据确实能在卷里存活。
 
 ## k3s集群现状
 
