@@ -7,6 +7,8 @@ import org.springframework.data.elasticsearch.annotations.Field;
 import org.springframework.data.elasticsearch.annotations.FieldType;
 
 import java.math.BigDecimal;
+import java.time.Instant;
+import org.springframework.data.elasticsearch.annotations.DateFormat;
 
 /**
  * CQRS读模型：从 policy-events 投影出来的保单快照，只保留搜索/展示需要的字段。
@@ -16,6 +18,9 @@ import java.math.BigDecimal;
 @Data
 @Document(indexName = "policies")
 public class PolicyDocument {
+
+    @Field(type = FieldType.Date, format = DateFormat.date_optional_time, name = "@timestamp")
+    private Instant timestamp;
 
     @Id
     private String id; // = policyNo

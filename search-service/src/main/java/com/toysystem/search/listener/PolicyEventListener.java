@@ -5,6 +5,9 @@ import com.toysystem.search.document.PolicyDocument;
 import com.toysystem.search.repository.PolicyDocumentRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+
+import java.time.Instant;
+
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 
@@ -30,6 +33,7 @@ public class PolicyEventListener {
         document.setProductType(policy.getProductType());
         document.setPremium(policy.getPremium());
         document.setStatus(policy.getStatus());
+        document.setTimestamp(Instant.now());
 
         repository.save(document);
         log.info("[search-index] {} policyNo={} 已写入ES", event.getEventType(), policy.getPolicyNo());
