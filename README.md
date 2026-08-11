@@ -2,6 +2,7 @@
 
 迷你保单管理系统（Mini Policy System）—— 用来把 [`docs/大型分布式系统_全景模块图.md`](docs/大型分布式系统_全景模块图.md)
 里的中间件逐一练到的玩具工程。落地规划见 [`docs/homelab-toy-system-plan.md`](docs/homelab-toy-system-plan.md)。
+设计/踩坑相关的问答记录（方便回归复习）见 [`docs/qa-log.md`](docs/qa-log.md)。
 
 ## 当前进度
 
