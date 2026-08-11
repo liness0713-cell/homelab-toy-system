@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+
+    <!--
+        P4.5分库分表练习（详见 docs/homelab-toy-system-plan.md 1.5节）：把单表policy拆成
+        policy_0~policy_3四张物理表，分片键是holder_name的哈希（ShardingSphere INLINE算法，
+        见 shardingsphere-config.yaml）。id列不再AUTO_INCREMENT——分片后每张表的自增各算各的，
+        会冲突，主键改由应用层的SnowflakeIdGenerator生成（把分片号编码进id里）。
+
+        本地开发数据是练习/测试数据，直接删旧表建新表，不写数据迁移脚本——迁移工具不是
+        这次练习的重点。
+
+        注意：这里没有用Liquibase的<dropTable tableName="policy"/>删旧表——ShardingSphere
+        分片规则里"policy"这个名字现在是指向policy_0~3的逻辑表名，Liquibase的DROP语句
+        会被当成对逻辑表的操作去广播路由，而不是真的删那张物理上还叫"policy"的旧表，
+        两者对不上会报错。所以旧表是在跑这个changelog之前手动用mysql客户端删的
+        （`DROP TABLE policy;`），不放进受版本控制的迁移脚本里——这本身也是分片改造
+        踩到的一个真实的坑，值得记一笔。
+    -->
+    <changeSet id="002-create-policy-0" author="claude-code">
+        <createTable tableName="policy_0">
+            <column name="id" type="BIGINT">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="policy_no" type="VARCHAR(32)">
+                <constraints nullable="false" unique="true" uniqueConstraintName="uk_policy_0_policy_no"/>
+            </column>
+            <column name="holder_name" type="VARCHAR(64)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="product_type" type="VARCHAR(16)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="premium" type="DECIMAL(12,2)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="status" type="VARCHAR(16)" defaultValue="DRAFT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="created_at" type="DATETIME" defaultValueComputed="CURRENT_TIMESTAMP">
+                <constraints nullable="false"/>
+            </column>
+            <column name="updated_at" type="DATETIME" defaultValueComputed="CURRENT_TIMESTAMP">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <createIndex indexName="idx_policy_0_holder_name" tableName="policy_0">
+            <column name="holder_name"/>
+        </createIndex>
+    </changeSet>
+
+    <changeSet id="002-create-policy-1" author="claude-code">
+        <createTable tableName="policy_1">
+            <column name="id" type="BIGINT">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="policy_no" type="VARCHAR(32)">
+                <constraints nullable="false" unique="true" uniqueConstraintName="uk_policy_1_policy_no"/>
+            </column>
+            <column name="holder_name" type="VARCHAR(64)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="product_type" type="VARCHAR(16)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="premium" type="DECIMAL(12,2)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="status" type="VARCHAR(16)" defaultValue="DRAFT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="created_at" type="DATETIME" defaultValueComputed="CURRENT_TIMESTAMP">
+                <constraints nullable="false"/>
+            </column>
+            <column name="updated_at" type="DATETIME" defaultValueComputed="CURRENT_TIMESTAMP">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <createIndex indexName="idx_policy_1_holder_name" tableName="policy_1">
+            <column name="holder_name"/>
+        </createIndex>
+    </changeSet>
+
+    <changeSet id="002-create-policy-2" author="claude-code">
+        <createTable tableName="policy_2">
+            <column name="id" type="BIGINT">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="policy_no" type="VARCHAR(32)">
+                <constraints nullable="false" unique="true" uniqueConstraintName="uk_policy_2_policy_no"/>
+            </column>
+            <column name="holder_name" type="VARCHAR(64)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="product_type" type="VARCHAR(16)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="premium" type="DECIMAL(12,2)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="status" type="VARCHAR(16)" defaultValue="DRAFT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="created_at" type="DATETIME" defaultValueComputed="CURRENT_TIMESTAMP">
+                <constraints nullable="false"/>
+            </column>
+            <column name="updated_at" type="DATETIME" defaultValueComputed="CURRENT_TIMESTAMP">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <createIndex indexName="idx_policy_2_holder_name" tableName="policy_2">
+            <column name="holder_name"/>
+        </createIndex>
+    </changeSet>
+
+    <changeSet id="002-create-policy-3" author="claude-code">
+        <createTable tableName="policy_3">
+            <column name="id" type="BIGINT">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="policy_no" type="VARCHAR(32)">
+                <constraints nullable="false" unique="true" uniqueConstraintName="uk_policy_3_policy_no"/>
+            </column>
+            <column name="holder_name" type="VARCHAR(64)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="product_type" type="VARCHAR(16)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="premium" type="DECIMAL(12,2)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="status" type="VARCHAR(16)" defaultValue="DRAFT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="created_at" type="DATETIME" defaultValueComputed="CURRENT_TIMESTAMP">
+                <constraints nullable="false"/>
+            </column>
+            <column name="updated_at" type="DATETIME" defaultValueComputed="CURRENT_TIMESTAMP">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <createIndex indexName="idx_policy_3_holder_name" tableName="policy_3">
+            <column name="holder_name"/>
+        </createIndex>
+    </changeSet>
+
+</databaseChangeLog>

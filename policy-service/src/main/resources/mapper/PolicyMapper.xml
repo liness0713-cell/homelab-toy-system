@@ -13,9 +13,11 @@
         <result property="updatedAt" column="updated_at"/>
     </resultMap>
 
-    <insert id="insert" parameterType="com.toysystem.policy.model.Policy" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO policy (policy_no, holder_name, product_type, premium, status, created_at, updated_at)
-        VALUES (#{policyNo}, #{holderName}, #{productType}, #{premium}, #{status}, #{createdAt}, #{updatedAt})
+    <!-- P4.5分片改造后id不再自增（分片后每张物理表的AUTO_INCREMENT各算各的，必然冲突），
+         id由应用层SnowflakeIdGenerator生成、当成普通列插入，不再用useGeneratedKeys。 -->
+    <insert id="insert" parameterType="com.toysystem.policy.model.Policy">
+        INSERT INTO policy (id, policy_no, holder_name, product_type, premium, status, created_at, updated_at)
+        VALUES (#{id}, #{policyNo}, #{holderName}, #{productType}, #{premium}, #{status}, #{createdAt}, #{updatedAt})
     </insert>
 
     <select id="findById" resultMap="PolicyResultMap">
@@ -30,10 +32,12 @@
         ORDER BY id DESC
     </select>
 
+    <!-- holder_name是分片键，ShardingSphere不允许UPDATE改它的值（物理上这一行属于哪张
+         actualDataNode是插入时就定死的，UPDATE没法把行"搬"到另一张物理表），所以SET子句
+         里不包含holder_name——分片键在这个玩具系统里视为创建后不可变。 -->
     <update id="update" parameterType="com.toysystem.policy.model.Policy">
         UPDATE policy
-        SET holder_name  = #{holderName},
-            product_type = #{productType},
+        SET product_type = #{productType},
             premium      = #{premium},
             status       = #{status},
             updated_at   = #{updatedAt}

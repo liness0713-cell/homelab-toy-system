@@ -6,6 +6,8 @@
 > 本文档是那份全景图的**具体落地版**：把抽象模块清单，转成一套真实可跑、互相依赖的代码工程。
 
 > **当前进度**：P1（policy-service + MySQL/Redis）、P2（gateway-service + frontend + JWT + ingress-nginx替换Traefik）、P3（Kafka + notification-service，双消费链路的第一条已跑通，含2.1/6.1/7.9节修订：父子Maven module + 共享`event-contracts`模块、消费者死信Topic容错）、P4（Elasticsearch + Kibana + search-service，双消费链路第二条打通，CQRS读写分离链路跑通，前端加了搜索页）均已完成并commit。P5起用户计划自己动手，不再交给Claude Code自动化实现（详见第5节表格备注）。
+>
+> **P4.5（已实现并验证通过）**：`policy-service`分库分表练习，插在P4和P5之间。ShardingSphere-JDBC集成、分片号编码进ID、`shardAware`对比开关均已实现；创建分布到全部4个分片、两条查询路径数据一致、更新/取消/列表回归、P1~P4全链路（Kafka+notification-service、ES+search-service）均已跑通验证。方案详见1.5节、5节表格、7节第10条、8节；ShardingSphere依赖集成过程中的试错记录见`docs/policy-service-sharding-troubleshooting.md`。
 
 ---
 
@@ -67,6 +69,58 @@ Policy（保单）
                                                          └─ search-service 消费 → 写入 ES → 对外提供搜索
               → frontend（静态资源）
 ```
+
+### 1.5 分库分表练习：policy表分片（P4.5，插入在P4和P5之间）
+
+**背景**：`policy-service`目前是单库单表，没有练到`大型分布式系统_全景模块图.md`第四节（分库分表/ShardingSphere）。趁`policy`表结构还简单、正式上k3s（P5）之前的这个窗口把它补上——越往后拖，表结构被P9的Canal/CDC锁定之后再改造成本越高。
+
+**技术选型：ShardingSphere-JDBC（不是Proxy）**。以JDBC驱动包的形式接在MyBatis下面，应用代码基本不用感知底层是几张物理表，改造成本低，直接对应全景图里"ShardingSphere对应Graphene的Sharding Ops"这个选型。
+
+**只分表，不分库**：`policy`表拆成`policy_0`~`policy_3`四张物理表，都还在同一个MySQL实例、同一个schema（`toy_policy_db`）里，不引入第二个数据库实例。理由：这次练习的目的是体验分片路由/跨分片查询这些机制，不是真的有数据量压力；分库解决的是"连接数/物理资源隔离"这个不同维度的问题，留作以后独立的练习项，这次不做，避免范围膨胀。
+
+**分片键：`holder_name`的哈希（不是`policyNo`，不是`productType`）**
+
+- 生产系统一般用客户ID分片——同一个客户的数据落在同一个分片，查"这个客户名下所有保单"不用跨分片。我们的玩具系统没有独立的客户/用户服务，`holderName`只是`policy`表上的一个字符串字段，没有稳定的客户身份可用。
+- **取舍决定**：直接对`holder_name`取哈希（`INLINE`算法，表达式大致是`policy_${Math.abs(holder_name.hashCode()) % 4}`），把姓名字符串本身当成客户身份的替身，而不是为了这一个练习单独建一个客户服务/客户表——那是另一个维度的范围膨胀，会喧宾夺主。
+- **明确接受的代价**（写在代码注释里，别几个月后忘了当初为什么这么选）：
+  - 两个不同的人恰好同名 → 被分到同一个分片，无伤大雅（不是唯一性索引，不影响正确性）。
+  - 同一个人的姓名在不同保单上录入方式不完全一致（有无空格、简繁体等）→ 会被分到不同分片，丢失了"本该属于同一个客户、查询本该落在同一个分片"这个真实收益。这是刻意的简化，不是生产做法。
+
+**主键：应用层自己生成雪花ID，分片号编码进ID里（不是ShardingSphere内置SNOWFLAKE）**
+
+- 分片之后每张物理表的`AUTO_INCREMENT`各算各的，`policy_0`和`policy_1`都会生成`id=1`，必须换成全局唯一的分布式ID。
+- **修订决定（比最初方案更进一步）**：不用ShardingSphere声明式配置的`SNOWFLAKE`主键生成算法，改成`policy-service`自己实现一个精简版雪花ID生成器，**把分片号直接编码进ID的bit位里**。原因：ShardingSphere的`KeyGenerateAlgorithm`在生成ID时拿不到这一行其他列的值（比如`holder_name`），没法感知"这一行最终会落到哪个分片"，没法从声明式配置里让ID的分片位和实际路由结果保持一致；而应用层自己生成ID时，可以先算好`shardIndex = Math.abs(holderName.hashCode()) % 4`（跟ShardingSphere的INLINE表达式用同一个公式），把这个值提前编进ID，再插入——两边算的是同一个公式、同一个输入，结果天然一致，不存在"先有鸡还是先有蛋"的顺序问题。
+- ID位布局（64位`long`，从低位到高位）：12位序列号（同一毫秒内自增，最多4096个）+ 2位分片号（0~3）+ 41位时间戳（自定义纪元起的毫秒数）。解码时反过来：`(id >> 12) & 0b11` 直接拿到分片号，不用查表、不用广播。
+- `id`列不再自增，`PolicyMapper.xml`的INSERT语句直接把应用层算好的`id`当成普通列插入，不依赖`useGeneratedKeys`。
+- **正确性依赖一个隐藏的一致性约束**：Java代码里的分片公式（`ShardKeyUtil.shardIndexFor`）和ShardingSphere配置里INLINE算法的表达式必须永远保持一致，这两处是分开维护的，改一处忘了改另一处就会导致"ID说这行在分片2，实际却插到了分片1"这种静默错误——上线前会专门写验证步骤亲眼确认两边算出来的分片号对得上，不能只凭代码审查断言它是对的。
+
+**新增：`shardAware`对比开关，同一个查询接口两种实现并排对比**
+
+- `GET /api/policies/{id}?shardAware=false`（默认，不传等价于false）：走原来的逻辑表`policy`查询，ShardingSphere广播查询全部4张`policy_N`表再合并——这是"分片键选错了、只有id可用"时的真实成本。
+- `GET /api/policies/{id}?shardAware=true`：从`id`直接解码出分片号，绕开ShardingSphere的逻辑表路由，直接对解出来的那一张物理表（比如`policy_2`）发查询——单分片命中，不广播。
+- 两条路径返回的数据应该完全一致（同一行数据），差异只在"底层发了几条SQL、扫了几张表"——配合`sql-show: true`的日志，这个对比清晰可见。`shardAware=true`这条路径是专门用来做对比/教学的诊断路径，不接Redis缓存（缓存会掩盖两条路径每次都是"真查了数据库"这件事，干扰对比）。
+- **全局二级索引（`id → 分片`的外部字典）这个方案本次依然不实现**——跟"分片号编码进ID"是两种互斥的解法（后者让ID自解释，前者靠额外维护一份索引数据），选了后者就不需要前者，两个都做没有必要。
+
+**受影响范围**：
+
+| 服务/组件 | 改动 |
+|---|---|
+| `policy-service` pom.xml | 加 `shardingsphere-jdbc` 依赖（ShardingSphere 5.5.x起`shardingsphere-jdbc-core`改名成了`shardingsphere-jdbc`） |
+| `policy-service` 新增分片配置 | 声明实际数据源、`policy`逻辑表→`policy_0~3`实际表的映射、分片算法（INLINE，对`holder_name`取哈希）；**不配置**ShardingSphere的主键生成算法，`id`完全由应用层生成 |
+| `policy-service` 新增代码 | `ShardKeyUtil`（分片号计算，和ShardingSphere的INLINE表达式保持同一个公式）、`SnowflakeIdGenerator`（生成/解码带分片号的ID） |
+| Liquibase changelog | 新增变更集：建`policy_0`~`policy_3`四张表（`id`列普通`BIGINT`主键，不再`AUTO_INCREMENT`），废弃旧的单表`policy`。本地开发数据是练习数据，直接随新changelog推倒重建，不写迁移脚本——迁移工具本身不是这次练习的重点 |
+| `PolicyMapper.xml` | INSERT语句把`id`当成普通列显式插入；新增一个按"物理表名+id"直接查询的方法，供`shardAware=true`路径用 |
+| `PolicyController`/`PolicyService` | `getById`新增`shardAware`参数，两条实现并存对比 |
+| `gateway-service` / `notification-service` / `search-service` / `frontend` | **不受影响**——它们只认Kafka事件契约（`PolicyEvent`）和REST API，不关心`policy-service`底层是几张物理表 |
+| Redis缓存（`policy-detail`） | `shardAware=false`路径保持原有缓存不变；`shardAware=true`路径不走缓存（见上） |
+
+**验证方式**（对齐项目一贯"亲眼验证，不假设"的习惯）：
+
+- 打开ShardingSphere的`sql-show: true`，对比`shardAware=false`（4条SELECT广播）和`shardAware=true`（1条SELECT）的实际下发SQL。
+- 造几条holderName明显不同的保单，确认：① 数据分散落在不同的`policy_N`表里；② 从返回的`id`解码出的分片号，和这行数据实际所在的物理表编号一致。
+- 回归P1→P4整条链路（Redis缓存、Kafka事件发布/消费、ES搜索）确认分片改造没有破坏已经跑通的功能。
+
+**分库（数据库级别的拆分）单独作为以后的练习，不在这次范围内**：这次只做分表，跟StatefulSet demo（3.4节）一样，安排成一个独立、不阻塞主线、不碰真实业务数据的插入式练习，具体时间待定。原因：分表已经能拿到这次练习真正想要的东西（路由机制、分布式ID、广播查询代价）；分库额外教的是"多数据源连接池管理、跨库事务"，但`policy-service`目前压根没有跨库写场景能体现分库的价值，勉强做容易沦为"配两个数据源"这种偏机械的工作。真要做，值得配真正独立的第二个MySQL实例（而不是同一实例开两个schema糊弄自己），但那样P5"宿主机托管MySQL"那块的"无selector Service"配置也要跟着变成两份，等这次分表练习稳定之后再单独规划。
 
 ---
 
@@ -255,6 +309,7 @@ StatefulSet+PV是K8s管理有状态服务的原生机制，虽然3.2节决定不
 | **P2** | 加 `gateway-service`，接JWT鉴权；加 `frontend` 登录+列表页；k3s里卸载默认Traefik、装 `ingress-nginx`，配好Ingress规则让外部能访问到gateway-service/frontend（详见3.5节） | 完整走一遍"外部→nginx-ingress→网关鉴权→后端"链路 |
 | **P3** | 本地docker-compose加Kafka；`policy-service`创建保单时发事件；写 `notification-service` 消费 | 体验"同一个事件，独立消费者"的解耦 |
 | **P4** | 本地加ES；写 `search-service` 消费同一事件写入ES，暴露搜索API；前端加搜索页 | 完整CQRS读写分离链路跑通 |
+| **P4.5（插入式练习，`policy-service`分库分表，已完成）** | 引入ShardingSphere-JDBC，`policy`表分片成`policy_0~3`（只分表不分库）；分片键为`holder_name`哈希；主键改用应用层自研的雪花ID、把分片号编码进ID里；`GET /api/policies/{id}`加`shardAware`开关，广播查询 vs 直接命中单分片两条路径并排对比（详见1.5节） | 体验分片路由、分布式主键、"分片号编码进ID"这个优化手段，以及它相对广播查询的真实提升；安排在P5之前，因为表结构定下来之后改造成本会越来越高 |
 | **P5（用户计划亲自动手实现，Claude Code在此阶段暂停自动化）** | 宿主机上用Docker常驻起MySQL/Redis（模拟云托管）；k3s里建`toy-system`（业务）和`toy-infra`（中间件）两个namespace；通过"无selector Service"让业务服务连上宿主机MySQL/Redis；Kafka/ES用Helm单副本部署进`toy-infra`；所有业务服务部署到`toy-system`（先`kubectl apply`手动部署，不接CI/CD） | "生产"环境跑通一次全链路，体验k3s连接外部依赖的方式；这一阶段由用户自己手写YAML/逐步调试，不交给Claude Code自动生成，目的是扎实练习K8s原生操作 |
 | **P5.5（插入式练习，不阻塞主线）** | 额外部署一个独立的MySQL StatefulSet+PV demo（不接业务数据） | 体验StatefulSet机制本身、Pod重建后数据还在 |
 | **P6** | **这时候再装Prometheus/Grafana**（部署进`toy-infra` namespace），因为已经有真实的服务和流量可以观察；详见"6.5 监控归属"一节 | 看到真实的CPU/内存/QPS曲线，可以故意kill掉一个Pod观察自愈 |
@@ -328,6 +383,7 @@ topic名：`policy-events`（单topic多事件类型，通过 `eventType` 字段
 7. P5阶段k3s里指向宿主机MySQL/Redis的"无selector Service + Endpoints"配置，单独写清楚在 `infra/k8s/middleware/external-services.yaml`，并在该文件顶部用注释说明"这模拟的是云托管数据库，指向宿主机IP"，方便回头复习时一眼看懂意图。
 8. P2阶段部署Ingress前，先确认并卸载k3s自带的Traefik（k3s安装参数或`kubectl -n kube-system delete`处理，具体以Claude Code实测为准），再用Helm装`ingress-nginx`，避免两个Ingress Controller同时抢80/443端口冲突。
 9. **消费者统一配置死信Topic容错**（详见6.1节）：`ErrorHandlingDeserializer` + `DefaultErrorHandler`(`FixedBackOff` + `DeadLetterPublishingRecoverer`)，死信topic命名约定`<原topic名>.DLT`。这是对已完成的`notification-service`的补充修订，请针对现有代码改造，而不是只在后续新服务里应用。
+10. **`policy-service`分库分表（P4.5，详见1.5节）**：用ShardingSphere-JDBC把`policy`表分片成`policy_0~3`（只分表不分库），分片键是`holder_name`的哈希（INLINE算法）。主键**不用**ShardingSphere内置的`SNOWFLAKE`算法，改成`policy-service`自己实现的雪花ID生成器，把分片号编码进ID的bit位里（分片公式必须和ShardingSphere的INLINE表达式保持一致，这是正确性的隐藏前提）。`GET /api/policies/{id}`加一个`shardAware`查询参数，`false`（默认）走原来的广播查询，`true`从`id`解码分片号后直接查单张物理表，两条路径并排存在方便对比，`shardAware=true`这条不接Redis缓存。全局二级索引方案不实现（跟"分片号编码进ID"互斥，选一个就够）。这是对已完成的`policy-service`代码做改造（新增分片配置、Liquibase changelog、`PolicyMapper.xml`、`PolicyController`/`PolicyService`），安排在P5之前实施。
 
 ---
 
@@ -341,3 +397,4 @@ topic名：`policy-events`（单topic多事件类型，通过 `eventType` 字段
 - **集群入口**：用 `ingress-nginx` 替换k3s默认自带的Traefik，对齐实际生产用nginx做集群入口的经验（详见3.5节，P2引入）。
 - **Java模块结构**：改用父子Maven module，共享`event-contracts`模块存放Kafka事件类，替代早前"每个服务独立pom"的决定（详见2.1节，P3踩坑后修订）。
 - **消费者容错**：统一加上死信Topic（`<topic>.DLT`），重试用尽后不再无限阻塞主流程（详见6.1节）。
+- **分库分表**：`policy-service`用ShardingSphere-JDBC，只分表（`policy_0~3`）不分库（分库留作独立练习，不在这次范围），分片键是`holder_name`的哈希（取舍：没有独立客户服务，用姓名字符串当客户身份的替身，接受同名合并/同人不同拼写分散这个代价）。主键改用应用层自研雪花ID、把分片号编码进ID里（不是ShardingSphere内置SNOWFLAKE），配一个`shardAware`开关对比"广播查询全部分片" vs "从ID解码直接命中单分片"两条路径（详见1.5节，P4.5，安排在P4和P5之间）。

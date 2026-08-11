@@ -5,7 +5,17 @@
         xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
         http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
 
+    <!--
+        历史记录，不会真的执行：这是P1阶段最初的单表设计（id自增），P4.5阶段分片改造成
+        policy_0~policy_3四张表、id改成应用层生成的雪花ID（见002-shard-policy-table.xml）。
+        这个changeset留在changelog里，就是为了能直接看到这套系统的schema是怎么从
+        "一张表、自增主键"演进到"分片、分布式ID"的——本身不会被执行（下面的precondition
+        永远不满足，会被Liquibase标记为"已跳过"），旧环境早就执行过的记录也不受影响。
+    -->
     <changeSet id="001-create-policy-table" author="claude-code">
+        <preConditions onFail="MARK_RAN">
+            <sqlCheck expectedResult="RUN_NEVER">SELECT 'SKIPPED_ON_PURPOSE'</sqlCheck>
+        </preConditions>
         <createTable tableName="policy">
             <column name="id" type="BIGINT" autoIncrement="true">
                 <constraints primaryKey="true" nullable="false"/>

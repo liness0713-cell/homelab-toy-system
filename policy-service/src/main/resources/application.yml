@@ -5,11 +5,11 @@ spring:
   application:
     name: policy-service
 
-  datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:mysql://localhost:3306/toy_policy_db?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC}
-    username: ${SPRING_DATASOURCE_USERNAME:toy_app}
-    password: ${SPRING_DATASOURCE_PASSWORD:toy_app_pw}
-    driver-class-name: com.mysql.cj.jdbc.Driver
+  # 注意：这里不再有 spring.datasource.* ——DataSource现在由
+  # com.toysystem.policy.sharding.ShardingSphereConfig 手动构造（同样读
+  # SPRING_DATASOURCE_URL/USERNAME/PASSWORD这几个环境变量，只是不再通过
+  # Spring Boot的DataSourceAutoConfiguration自动装配），包一层ShardingSphere
+  # 分片路由后再暴露成标准DataSource给MyBatis用。
 
   data:
     redis:
@@ -23,6 +23,13 @@ spring:
 
   liquibase:
     change-log: classpath:db/changelog/db.changelog-master.xml
+    # Liquibase单独直连真实MySQL，不走ShardingSphere那层——ShardingSphere-JDBC的
+    # DatabaseMetaData自省跟Liquibase的"这张表存在吗"检测对不上（实测会导致Liquibase
+    # 误判DATABASECHANGELOG不存在、重复尝试CREATE TABLE报错）。DDL跑在实际物理表名
+    # （policy_0~3等）上，本来就不需要走分片路由，直连反而更简单可靠。
+    url: ${SPRING_DATASOURCE_URL:jdbc:mysql://localhost:3306/toy_policy_db?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC}
+    user: ${SPRING_DATASOURCE_USERNAME:toy_app}
+    password: ${SPRING_DATASOURCE_PASSWORD:toy_app_pw}
 
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}

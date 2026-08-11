@@ -1,0 +1,48 @@
+# ShardingSphere-JDBC 分片规则 + 数据源。
+# 数据源用 @VAR@ 这种自定义占位符（不是Spring的${VAR:default}语法），在
+# ShardingSphereConfig.java 里用SPRING_DATASOURCE_*环境变量做字符串替换后再喂给
+# ShardingSphere解析——特意不用${}是因为这个文件里ShardingSphere自己也用${0..3}/
+# ${expr}这套语法，两种占位符混在一起容易冲突/读错。
+# Standalone + 内存repository：不落盘持久化元数据，每次启动都从这个文件重新加载，
+# 不需要跨重启保留额外状态（我们的分片规则本来就是这个文件本身定义的）。
+mode:
+  type: Standalone
+  repository:
+    type: Memory
+
+dataSources:
+  ds:
+    dataSourceClassName: com.zaxxer.hikari.HikariDataSource
+    driverClassName: com.mysql.cj.jdbc.Driver
+    jdbcUrl: "@SPRING_DATASOURCE_URL@"
+    username: "@SPRING_DATASOURCE_USERNAME@"
+    password: "@SPRING_DATASOURCE_PASSWORD@"
+
+rules:
+  # 没配分片规则的表（比如Liquibase自己的DATABASECHANGELOG/DATABASECHANGELOGLOCK）
+  # 要显式声明成single table规则，ShardingSphere才会正常加载它们的元数据、让Liquibase的
+  # "这张表存在吗"这类检测查询返回正确结果——不声明的话ShardingSphere不知道这些表存在，
+  # Liquibase会误以为表不存在,重复尝试CREATE TABLE导致报错。
+  - !SINGLE
+    tables:
+      - "*.*"
+  - !SHARDING
+    tables:
+      policy:
+        actualDataNodes: ds.policy_${0..3}
+        tableStrategy:
+          standard:
+            shardingColumn: holder_name
+            shardingAlgorithmName: policy-holder-inline
+    shardingAlgorithms:
+      policy-holder-inline:
+        type: INLINE
+        props:
+          # 跟 ShardKeyUtil.shardIndexFor(String) 必须是同一个公式——SnowflakeIdGenerator
+          # 生成ID时用Java代码算一遍分片号、编进ID里，这里ShardingSphere用Groovy表达式
+          # 再独立算一遍决定路由到哪张实际表。两处算的是同一个holder_name、同一个公式，
+          # 结果天然一致；但这是两份独立维护的代码，改一处忘了改另一处就会悄悄错位。
+          algorithm-expression: policy_${Math.abs(holder_name.hashCode()) % 4}
+
+props:
+  sql-show: true

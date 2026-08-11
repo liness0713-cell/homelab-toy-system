@@ -9,6 +9,9 @@ import com.toysystem.policy.exception.PolicyNotFoundException;
 import com.toysystem.policy.mapper.PolicyMapper;
 import com.toysystem.policy.model.Policy;
 import com.toysystem.policy.model.PolicyStatus;
+import com.toysystem.policy.sharding.ShardKeyUtil;
+import com.toysystem.policy.sharding.ShardTableReader;
+import com.toysystem.policy.sharding.SnowflakeIdGenerator;
 import lombok.RequiredArgsConstructor;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.CachePut;
@@ -27,10 +30,16 @@ public class PolicyService {
 
     private final PolicyMapper policyMapper;
     private final EventPublisher eventPublisher;
+    private final SnowflakeIdGenerator idGenerator;
+    private final ShardTableReader shardTableReader;
 
     public Policy create(CreatePolicyRequest request) {
         LocalDateTime now = LocalDateTime.now();
         Policy policy = new Policy();
+        // 分片号必须先算出来，再用来生成id——ShardingSphere会用同一个holder_name、
+        // 同一个公式独立算一遍决定这一行实际插到哪张物理表，两边必须对得上（见ShardKeyUtil注释）。
+        int shardIndex = ShardKeyUtil.shardIndexFor(request.getHolderName());
+        policy.setId(idGenerator.nextId(shardIndex));
         policy.setPolicyNo(generatePolicyNo());
         policy.setHolderName(request.getHolderName());
         policy.setProductType(request.getProductType());
@@ -53,6 +62,21 @@ public class PolicyService {
         return policy;
     }
 
+    /**
+     * P4.5对比路径：从id直接解码分片号，绕开ShardingSphere，用一个独立的原生JDBC连接
+     * （见ShardTableReader/rawMySqlDataSource）直接查解出来的那一张物理表——单分片命中，
+     * 不广播。特意不接Redis缓存，保证每次调用都是真的打到数据库，方便跟 getById(id) 的
+     * 广播行为做对比（配合sql-show日志看）。
+     */
+    public Policy getByIdShardAware(Long id) {
+        int shardIndex = SnowflakeIdGenerator.extractShard(id);
+        Policy policy = shardTableReader.findByIdInShard(id, shardIndex);
+        if (policy == null) {
+            throw new PolicyNotFoundException(id);
+        }
+        return policy;
+    }
+
     public List<Policy> listAll() {
         return policyMapper.findAll();
     }
@@ -64,7 +88,6 @@ public class PolicyService {
             throw new PolicyNotFoundException(id);
         }
 
-        existing.setHolderName(request.getHolderName());
         existing.setProductType(request.getProductType());
         existing.setPremium(request.getPremium());
         existing.setUpdatedAt(LocalDateTime.now());

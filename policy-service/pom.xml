@@ -60,6 +60,77 @@
       <groupId>org.springframework.kafka</groupId>
       <artifactId>spring-kafka</artifactId>
     </dependency>
+    <dependency>
+      <groupId>org.apache.shardingsphere</groupId>
+      <artifactId>shardingsphere-jdbc</artifactId>
+      <version>5.5.3</version>
+    </dependency>
+    <!-- ShardingSphere把sharding规则(!SHARDING这个YAML tag靠它注册)和INLINE算法的Groovy表达式
+         求值都拆成了独立的可插拔feature模块，光有shardingsphere-jdbc这个核心driver是不够的。 -->
+    <dependency>
+      <groupId>org.apache.shardingsphere</groupId>
+      <artifactId>shardingsphere-sharding-core</artifactId>
+      <version>5.5.3</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.shardingsphere</groupId>
+      <artifactId>shardingsphere-infra-expr-groovy</artifactId>
+      <version>5.5.3</version>
+    </dependency>
+    <!-- MySQL方言支持（JDBC URL识别、SQL解析/改写等），是独立可插拔模块，不装ShardingSphere
+         连"这是MySQL"都识别不出来。 -->
+    <dependency>
+      <groupId>org.apache.shardingsphere</groupId>
+      <artifactId>shardingsphere-jdbc-dialect-mysql</artifactId>
+      <version>5.5.3</version>
+    </dependency>
+    <!-- ShardingSphere需要知道HikariDataSource的"jdbcUrl"属性对应它内部标准的"url"属性——
+         这套连接池属性名映射（Hikari/Druid/DBCP各自属性名不一样）是独立SPI模块，没有它
+         ShardingSphere读不到URL，NPE在StorageUnit构造时。 -->
+    <dependency>
+      <groupId>org.apache.shardingsphere</groupId>
+      <artifactId>shardingsphere-infra-data-source-pool-hikari</artifactId>
+      <version>5.5.3</version>
+    </dependency>
+    <!-- ShardingSphere需要一个"governance mode"实现（哪怕单机JDBC场景也要显式声明）。
+         用Standalone模式 + 内存repository：不落盘持久化元数据，每次启动都从
+         shardingsphere-config.yaml重新加载，符合我们"配置即代码、不需要跨重启保留额外状态"的场景。 -->
+    <dependency>
+      <groupId>org.apache.shardingsphere</groupId>
+      <artifactId>shardingsphere-standalone-mode-core</artifactId>
+      <version>5.5.3</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.shardingsphere</groupId>
+      <artifactId>shardingsphere-standalone-mode-repository-memory</artifactId>
+      <version>5.5.3</version>
+    </dependency>
+    <!-- Spring Boot的依赖管理锁的commons-lang3版本太老，没有ShardingSphere 5.5.3用到的
+         org.apache.commons.lang3.Strings这个类（较新版本才加的），显式提一个新版本覆盖它。 -->
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-lang3</artifactId>
+      <version>3.20.0</version>
+    </dependency>
+    <!-- 权限模块，ALL_PERMITTED这个最简单的默认provider在这里 -->
+    <dependency>
+      <groupId>org.apache.shardingsphere</groupId>
+      <artifactId>shardingsphere-authority-core</artifactId>
+      <version>5.5.3</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.shardingsphere</groupId>
+      <artifactId>shardingsphere-authority-simple</artifactId>
+      <version>5.5.3</version>
+    </dependency>
+    <!-- "single table"功能模块：让ShardingSphere正确识别/透传没配分片规则的普通表
+         （比如Liquibase自己的DATABASECHANGELOG），不装这个ShardingSphere不认识这些表存在，
+         会导致Liquibase的"表存不存在"检测出错。 -->
+    <dependency>
+      <groupId>org.apache.shardingsphere</groupId>
+      <artifactId>shardingsphere-single-core</artifactId>
+      <version>5.5.3</version>
+    </dependency>
 
     <dependency>
       <groupId>org.projectlombok</groupId>

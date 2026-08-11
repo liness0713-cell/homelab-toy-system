@@ -5,6 +5,11 @@
         xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
         http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
 
+    <!-- 001保留在这里纯粹是为了留schema演进的历史记录（单表→P4.5分片），它自己的
+         precondition保证不会真的执行，见该文件顶部注释。 -->
+    <!--
     <include file="db/changelog/001-create-policy-table.xml" relativeToChangelogFile="false"/>
+    -->
+    <include file="db/changelog/002-shard-policy-table.xml" relativeToChangelogFile="false"/>
 
 </databaseChangeLog>
