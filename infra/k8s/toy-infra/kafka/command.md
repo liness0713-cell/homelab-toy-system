@@ -88,3 +88,20 @@ kubectl get pods -n toy-infra -w
 （-w是watch模式，能看着Pod从Pending → ContainerCreating → Running的过程，看到Running且READY变绿之后按Ctrl+C退出watch）
 
 跑完把结果贴给我，我们确认存储是不是真的绑定到了kafka-pv-0。
+
+
+## 报错
+ziqiao@ziqiao-ASM100:~$ kubectl apply -f /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-infra/kafka/kafka-nodepool.yaml -n toy-infra
+error: resource mapping not found for name: "dual-role" namespace: "" from "/home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-infra/kafka/kafka-nodepool.yaml": no matches for kind "KafkaNodePool" in version "kafka.strimzi.io/v1beta2"
+ensure CRDs are installed first
+
+
+先确认几件事，帮你定位到底是哪一种
+# 1. 确认CRD的具体版本支持情况
+kubectl get crd kafkanodepools.kafka.strimzi.io -o yaml | grep -A5 "versions:"
+
+# 2. 确认Strimzi Operator实际部署时用的镜像版本（1.1.0是Helm chart版本，不是Strimzi本身版本，两者不一定对应）
+kubectl get deployment strimzi-cluster-operator -n toy-infra -o jsonpath='{.spec.template.spec.containers[0].image}'
+
+# 3. 查看Operator日志，看有没有关于Feature Gate的报错/警告
+kubectl logs -n toy-infra deployment/strimzi-cluster-operator --tail=50 | grep -i "feature\|nodepool\|kraft"
