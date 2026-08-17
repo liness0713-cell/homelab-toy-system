@@ -1,0 +1,29 @@
+apiVersion: kafka.strimzi.io/v1beta2
+kind: Kafka
+metadata:
+  name: my-kafka
+  annotations:
+    strimzi.io/node-pools: enabled
+    strimzi.io/kraft: enabled
+spec:
+  kafka:
+    version: 4.0.0
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+    config:
+      offsets.topic.replication.factor: 1
+      transaction.state.log.replication.factor: 1
+      transaction.state.log.min.isr: 1
+      default.replication.factor: 1
+      min.insync.replicas: 1
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}
+
+# strimzi.io/kraft: enabled — 用KRaft模式(不需要Zookeeper)
+# 那几个replication.factor: 1/min.insync.replicas: 1 — 单节点场景下必须设成1，因为副本数不可能超过broker数量，默认值(通常是3)在单节点下会导致topic创建失败
+# listeners里先用最简单的plain/无TLS配置，方便你先跑通链路，加密/认证以后需要时再加
+# 没写kafka.replicas——这是新版Strimzi的写法，副本数完全由上面KafkaNodePool的replicas字段决定，Kafka这个顶层对象不再重复声明
