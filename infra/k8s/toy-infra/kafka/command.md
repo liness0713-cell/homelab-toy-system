@@ -105,3 +105,25 @@ kubectl get deployment strimzi-cluster-operator -n toy-infra -o jsonpath='{.spec
 
 # 3. 查看Operator日志，看有没有关于Feature Gate的报错/警告
 kubectl logs -n toy-infra deployment/strimzi-cluster-operator --tail=50 | grep -i "feature\|nodepool\|kraft"
+
+
+两个资源都成功创建了(created)，但kubectl get pods里除了Operator本身，没看到任何新的Kafka相关Pod被生成——说明Operator可能在后台reconcile时卡住了或报错，但没有把错误直接抛给你(这类"resource创建成功但底层Pod没生成"的情况，问题通常记录在CR自身的status字段或者Operator日志里，而不是kubectl apply的输出里)。
+
+来看这几处线索：
+
+Step 1：看Kafka这个资源自己的状态（最直接）
+bash
+kubectl get kafka my-kafka -n toy-infra
+kubectl describe kafka my-kafka -n toy-infra
+
+重点看describe输出最下面的Status和Events部分，通常会直接写明白"为什么没有继续往下走"。
+
+Step 2：看KafkaNodePool自己的状态
+bash
+kubectl describe kafkanodepool dual-role -n toy-infra
+Step 3：看PVC有没有被创建出来（判断卡在存储绑定还是别的环节）
+bash
+kubectl get pvc -n toy-infra
+Step 4：看Operator日志里最新的报错（最可能拿到具体原因的地方）
+bash
+kubectl logs -n toy-infra deployment/strimzi-cluster-operator --tail=80
