@@ -120,7 +120,18 @@ services:
       elasticsearch:
         condition: service_healthy
 
+#在harbor引入之前，用来给k3s传递镜像
+  registry:
+    image: registry:2
+    container_name: local-registry
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - registry-data:/var/lib/registry
+
 volumes:
   mysql-data:
   kafka-data:
   es-data:
+  registry-data:
