@@ -14,9 +14,9 @@ spec:
     size: 8Gi
     class: local-storage
     selector:
-      matchLabels:
-        app: kafka
+      app: kafka
 
 # roles: [controller, broker] — 单节点homelab没必要拆两种角色，一个节点身兼两职，等你以后加第二台node才需要拆成独立的NodePool
 # storage.class: local-storage — 对应我们之前建的StorageClass
 # storage.selector.matchLabels.app: kafka — 对应kafka-pv-0身上打的label，保证精确匹配，不会被以后的ES PV误抢
+# 变化点：selector底下直接写app: kafka（对应kafka-pv-0这块PV身上打的label），不再套一层matchLabels。
