@@ -143,6 +143,36 @@ NAME    CONTROLLER             PARAMETERS   AGE
 nginx   k8s.io/ingress-nginx   <none>       26d
 
 
+装完确认Pod起来了：
+
+bash
+kubectl get pods -n toy-infra
+kubectl get svc -n toy-infra
+
+（重点关注新出现的kafka-ui这个Service，确认一下它监听的端口号——大概率是80，但yaml里的port.number要跟这里实际看到的对上，如果不是80要跟我说一声，我把Ingress那段改一下）
+
+
+ziqiao@ziqiao-ASM100:~$ kubectl get svc -n toy-infra
+NAME                       TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)                               AGE
+kafka-ui                   ClusterIP   10.43.111.171   <none>        80/TCP                                53s
+my-kafka-kafka-bootstrap   ClusterIP   10.43.50.129    <none>        9091/TCP,9092/TCP                     3d
+my-kafka-kafka-brokers     ClusterIP   None            <none>        9090/TCP,9091/TCP,8443/TCP,9092/TCP   3d
+ziqiao@ziqiao-ASM100:~$ kubectl get deployments -n toy-infra
+NAME                       READY   UP-TO-DATE   AVAILABLE   AGE
+kafka-ui                   1/1     1            1           61s
+my-kafka-entity-operator   1/1     1            1           3d
+strimzi-cluster-operator   1/1     1            1           3d8h
+ziqiao@ziqiao-ASM100:~$ kubectl get pod -n toy-infra
+NAME                                        READY   STATUS    RESTARTS      AGE
+kafka-ui-6d4b99c65b-pcq2v                   1/1     Running   0             67s
+my-kafka-dual-role-0                        1/1     Running   3 (23h ago)   3d
+my-kafka-entity-operator-6d9c4cbfd-8fbjp    2/2     Running   8 (23h ago)   3d
+strimzi-cluster-operator-5b4ff798cc-7bnk7   1/1     Running   4 (23h ago)   3d8h
+ziqiao@ziqiao-ASM100:~$ kubectl get ingressclass
+NAME    CONTROLLER             PARAMETERS   AGE
+nginx   k8s.io/ingress-nginx   <none>       26d
+
+
 bash
 cat <<'EOF' > kafka-ui-ingress.yaml
 apiVersion: networking.k8s.io/v1
@@ -178,3 +208,65 @@ bash
 echo "192.168.40.23 kafka-ui.homelab.local" | sudo tee -a /etc/hosts
 
 （192.168.40.23是你node的IP，跟之前kubectl get nodes -o wide看到的一致——因为k3s单节点场景下，nginx-ingress的入口就是这台node本身）
+
+Step 5：验证
+
+浏览器打开：
+
+http://kafka-ui.homelab.local
+
+应该能看到kafka-ui的界面，并且能看到my-kafka这个集群、里面的broker信息（目前应该还没有topic，因为还没创建过）。
+
+
+```
+拆开讲清楚这条命令的每一部分：
+
+bash
+echo "192.168.40.23 kafka-ui.homelab.local" | sudo tee -a /etc/hosts
+echo "..."
+
+就是把这一行文字原样打印出来——单独执行的话，这行文字只是显示在终端里，不会写进任何文件。
+
+| (管道符)
+
+把前一个命令的输出，作为后一个命令的输入——这里就是把echo打印出来的那行文字，喂给后面的tee命令去处理。
+
+tee是什么
+
+tee这个命令的作用是"把输入内容，一边显示在终端，一边写入文件"（名字来源于水管的"T字接头"，把水流一分为二）。它跟直接用>重定向的区别在于：tee会同时在终端上给你打印出写了什么，方便你确认；而echo "..." > /etc/hosts只会静默写入，终端上什么反馈都看不到。
+
+-a这个参数
+
+append(追加)的缩写——意思是"在文件末尾加一行，不清空原有内容"。这个很关键：如果没有-a，tee默认会覆盖整个文件，/etc/hosts里你系统本来的其他解析记录(比如127.0.0.1 localhost这类)会被整个清空、只剩你写的这一行，那会搞坏你的系统网络。所以这里-a是必须的，别漏掉。
+
+为什么前面要加sudo
+
+/etc/hosts是系统级配置文件，属于root用户，普通用户没有写入权限，sudo是"以管理员权限执行"，这里必须加，不加会报Permission denied。
+
+顺带一提：为什么不能直接写成 sudo echo "..." >> /etc/hosts
+
+这是个很多人会踩的坑，值得提一下：sudo只提升了echo这个命令本身的权限，但重定向>>这个动作是由你当前的shell执行的，不是被sudo提权的那个子进程执行的，所以sudo echo "xxx" >> /etc/hosts依然会因为shell本身没权限写/etc/hosts而报错。用sudo tee是标准的绕过方式，因为这样是让tee这个进程本身跑在sudo权限下去执行写入动作，而不是让shell做重定向。
+
+整体效果
+
+执行完这条命令后，/etc/hosts文件末尾会多这样一行：
+
+192.168.40.23 kafka-ui.homelab.local
+
+以后你的电脑访问http://kafka-ui.homelab.local这个域名时，不会走真实的DNS服务器查询，而是先看这个本地文件，发现有这条记录，直接把域名解析成192.168.40.23——这也是为什么这种方式只在你自己这台电脑上有效，别人的电脑没配过这条记录，是访问不了这个域名的（纯本地的域名映射，不是真实注册的公网域名）。
+```
+
+ziqiao@ziqiao-ASM100:~$ echo "192.168.40.23 kafka-ui.homelab.local" | sudo tee -a /etc/hosts
+[sudo: authenticate] Password:     
+192.168.40.23 kafka-ui.homelab.local
+ziqiao@ziqiao-ASM100:~$ cat /etc/hosts
+127.0.0.1 localhost
+127.0.1.1 ziqiao-ASM100
+
+# The following lines are desirable for IPv6 capable hosts
+::1     ip6-localhost ip6-loopback
+fe00::0 ip6-localnet
+ff00::0 ip6-mcastprefix
+ff02::1 ip6-allnodes
+ff02::2 ip6-allrouters
+192.168.40.23 kafka-ui.homelab.local
