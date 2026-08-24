@@ -216,3 +216,164 @@ kubectl get pvc -n toy-infra
 第一次拉ES镜像可能要一点时间(ES镜像体积比Kafka大不少)，kubectl get elasticsearch那一列会有个HEALTH字段，从空/red变成green才算真正就绪。
 
 跑完把这三条命令的输出贴给我，我们确认存储绑定是否成功指向了es-pv-0(不能又落到local-path)。
+
+
+
+
+
+ziqiao@ziqiao-ASM100:~$ kubectl get pvc -n toy-infra
+NAME                                    STATUS   VOLUME       CAPACITY   ACCESS MODES   STORAGECLASS    VOLUMEATTRIBUTESCLASS   AGE
+data-my-kafka-dual-role-0               Bound    kafka-pv-0   8Gi        RWO            local-storage   <unset>                 7d
+elasticsearch-data-my-es-es-default-0   Bound    es-pv-0      16Gi       RWO            local-storage   <unset>                 48s
+ziqiao@ziqiao-ASM100:~$ ziqiao@ziqiao-ASM100:~$ kubectl get pv --show-labels
+ziqiao@ziqiao-ASM100:~$: command not found
+ziqiao@ziqiao-ASM100:~$ kubectl get pv --show-labels
+NAME         CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                                             STORAGECLASS    VOLUMEATTRIBUTESCLASS   REASON   AGE    LABELS
+es-pv-0      16Gi       RWO            Retain           Bound    toy-infra/elasticsearch-data-my-es-es-default-0   local-storage   <unset>                          18m    app=es
+kafka-pv-0   8Gi        RWO            Retain           Bound    toy-infra/data-my-kafka-dual-role-0               local-storage   <unset>                          7d9h   app=kafka
+ziqiao@ziqiao-ASM100:~$ kubectl get pvc -n toy-infra
+NAME                                    STATUS   VOLUME       CAPACITY   ACCESS MODES   STORAGECLASS    VOLUMEATTRIBUTESCLASS   AGE
+data-my-kafka-dual-role-0               Bound    kafka-pv-0   8Gi        RWO            local-storage   <unset>                 7d
+elasticsearch-data-my-es-es-default-0   Bound    es-pv-0      16Gi       RWO            local-storage   <unset>                 2m
+ziqiao@ziqiao-ASM100:~$ kubectl get elasticsearch -n toy-infra
+NAME    HEALTH   NODES   VERSION   PHASE   AGE
+my-es   green    1       9.5.2     Ready   2m20s
+ziqiao@ziqiao-ASM100:~$ kubectl get pods -n toy-infra
+NAME                                        READY   STATUS    RESTARTS        AGE
+kafka-ui-6d4b99c65b-pcq2v                   1/1     Running   2 (50m ago)     3d23h
+my-es-es-default-0                          1/1     Running   0               3m21s
+my-kafka-dual-role-0                        1/1     Running   5 (2d22h ago)   7d
+my-kafka-entity-operator-6d9c4cbfd-8fbjp    2/2     Running   16 (49m ago)    7d
+strimzi-cluster-operator-5b4ff798cc-7bnk7   1/1     Running   6 (2d22h ago)   7d8h
+ziqiao@ziqiao-ASM100:~$ kubectl get svc -n toy-infra
+NAME                       TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)                               AGE
+kafka-ui                   ClusterIP   10.43.111.171   <none>        80/TCP                                3d23h
+my-es-es-default           ClusterIP   None            <none>        9200/TCP                              3m35s
+my-es-es-http              ClusterIP   10.43.7.172     <none>        9200/TCP                              3m36s
+my-es-es-internal-http     ClusterIP   10.43.77.165    <none>        9200/TCP                              3m36s
+my-es-es-transport         ClusterIP   None            <none>        9300/TCP                              3m36s
+my-kafka-kafka-bootstrap   ClusterIP   10.43.50.129    <none>        9091/TCP,9092/TCP                     7d
+my-kafka-kafka-brokers     ClusterIP   None            <none>        9090/TCP,9091/TCP,8443/TCP,9092/TCP   7d
+
+
+
+
+ES这次一次性跑通，没有中间报错——存储正确绑定到es-pv-0(不是local-path)，HEALTH: green，PHASE: Ready，说明索引分片状态完全健康。
+
+存储链路核对（跟Kafka那次同一套逻辑，完全对上了）
+elasticsearch-data-my-es-es-default-0 (PVC) → es-pv-0 (PV) → /data/es-0 (宿主机实际目录)
+Service这块的命名规律，正好跟你之前问的"bootstrap vs brokers"是同一个模式
+my-es-es-http             ClusterIP   10.43.7.172    9200/TCP   ← 客户端连接入口(类比Kafka的bootstrap)
+my-es-es-internal-http    ClusterIP   10.43.77.165   9200/TCP   ← Operator内部健康检查用
+my-es-es-default          ClusterIP   None           9200/TCP   ← Headless(类比Kafka的brokers)，精确定位到具体某个ES节点
+my-es-es-transport        ClusterIP   None           9300/TCP   ← Headless，ES节点之间做集群内部通信(选主、分片同步)用，类似Kafka broker间通信
+
+以后kafka-ui同款的可视化工具(比如ES自己的Kibana，或者更轻量的Elasticvue)要连ES，应该连**my-es-es-http:9200**这个地址——逻辑跟当初连my-kafka-kafka-bootstrap:9092完全一致，都是"给客户端用的统一入口"。
+
+一个要注意的点：ES默认开了安全认证，需要拿密码才能连
+
+ECK装出来的ES默认启用了X-Pack安全认证(账号是elastic)，密码是Operator自动生成并存进Secret里的，不像我们Kafka那边配的是plain/无认证。取密码：
+
+bash
+kubectl get secret my-es-es-elastic-user -n toy-infra -o jsonpath='{.data.elastic}' | base64 -d
+echo
+建议的下一步
+
+要不要现在就验证一下ES能不能正常读写(比如从Kafka Pod里curl一下ES的健康检查接口，验证跨服务网络是通的)？还是想先装个可视化工具(Kibana，同一个ECK Operator可以直接管理，装法跟Elasticsearch这个CR几乎一样)？或者暂停这条线，先去处理别的事情？
+
+## ECK装出来的ES默认启用了X-Pack安全认证(账号是elastic)，密码是Operator自动生成并存进Secret里的
+ziqiao@ziqiao-ASM100:~$ kubectl get secret my-es-es-elastic-user -n toy-infra -o jsonpath='{.data.elastic}' | base64 -d
+pkPFLiFqJNTqZ5JiROHU7nhL
+
+
+
+好，两件事按顺序来：先验证连通性，再装Kibana。
+
+Step 1：验证ES连通性
+
+先取密码：
+
+Ran a command
+
+中文：
+
+## Step 1：取ES的登录密码
+bash
+kubectl get secret my-es-es-elastic-user -n toy-infra -o jsonpath='{.data.elastic}' | base64 -d
+echo
+pkPFLiFqJNTqZ5JiROHU7nhL
+
+把这个密码记下来，后面curl要用。
+
+## Step 2：从集群内部验证ES能否正常访问
+
+起一个临时的调试Pod，跑curl测试(不用改动任何现有Pod)：
+
+bash
+kubectl run curl-test --rm -it --image=curlimages/curl --restart=Never -n toy-infra -- \
+  curl -u elastic:pkPFLiFqJNTqZ5JiROHU7nhL -k https://my-es-es-http:9200
+
+注意这里是https不是http——ES默认自带TLS加密，这也是ECK的默认安全设定，-k是跳过证书校验(自签名证书，homelab场景先这么处理，够用)。
+
+如果一切正常，应该能看到一段JSON，里面有"cluster_name":"my-es"、"tagline":"You Know, for Search"这样的字段，就说明网络链路、认证都是通的。
+
+```
+kubectl run curl-test --rm -it --image=curlimages/curl --restart=Never -n toy-infra -- \=Never -n toy-infra -- \
+  curl -u elastic:pkPFLiFqJNTqZ5JiROHU7nhL -k https://my-es-es-http:9200
+All commands and output from this session will be recorded in container logs, including credentials and sensitive information passed through the command prompt.
+If you don't see a command prompt, try pressing enter.
+{
+  "name" : "my-es-es-default-0",
+  "cluster_name" : "my-es",
+  "cluster_uuid" : "HiYMw7zdRUmIGuyoiG9JGg",
+  "version" : {
+    "number" : "9.5.2",
+    "build_flavor" : "default",
+    "build_type" : "docker",
+    "build_hash" : "b42549c72e6e040825b13e5d8ebf7ff63886b24d",
+    "build_date" : "2026-08-18T10:07:58.745010960Z",
+    "build_snapshot" : false,
+    "lucene_version" : "10.5.1",
+    "minimum_wire_compatibility_version" : "8.19.0",
+    "minimum_index_compatibility_version" : "8.0.0"
+  },
+  "tagline" : "You Know, for Search"
+}
+Session ended, resume using 'kubectl attach curl-test -c curl-test -n toy-infra -i -t' command
+pod "curl-test" deleted from toy-infra namespace
+```
+
+
+
+## Step 3：装Kibana（同一个ECK Operator管理，CR结构和ES非常像）
+bash
+cd /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-infra/es
+
+cat <<'EOF' > kibana.yaml
+apiVersion: kibana.k8s.elastic.co/v1
+kind: Kibana
+metadata:
+  name: my-kibana
+  namespace: toy-infra
+spec:
+  version: 9.5.2
+  count: 1
+  elasticsearchRef:
+    name: my-es
+EOF
+
+kubectl apply -f /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-infra/es/kibana.yaml
+
+关键点：elasticsearchRef.name: my-es——这一行是Kibana和ES"配对"的关键，Operator看到这个引用后，会自动帮Kibana注入连接ES所需的地址和认证信息，不需要你手动填ES的地址和密码，这是ECK这种同厂商Operator比kafka-ui那种"手动填bootstrap地址"更省心的地方(因为Kibana和ES是同一个Operator统一管理的两种CRD，能互相感知)。
+
+Kibana本身不需要持久化存储(它是无状态的UI层，数据都在ES那边)，所以这份yaml不需要涉及PV/PVC。
+
+## Step 4：确认Kibana状态
+bash
+kubectl get kibana -n toy-infra
+kubectl get pods -n toy-infra
+kubectl get svc -n toy-infra
+
+HEALTH变成green、PHASE变成Ready就算成功。之后如果你想让Kibana也能从宿主机浏览器访问，我们可以照搬kafka-ui那套Ingress流程，加一个kibana.homelab.local的域名映射。
+
+先跑完Step1-2验证连通性，把结果贴给我，再继续看Step3-4的Kibana装配是否顺利。
