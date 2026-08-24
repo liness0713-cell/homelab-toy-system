@@ -484,4 +484,27 @@ echo "192.168.40.23 kibana.homelab.local" | sudo tee -a /etc/hosts
 
 浏览器打开https://kibana.homelab.local(注意这次是https，浏览器可能会因为自签名证书报警告，选择"继续访问"即可)，登录账号密码就是elastic/你之前取到的那串密码。
 
-要现在跑这几步吗？
+kubectl get ingress -n toy-infra
+
+
+
+ziqiao@ziqiao-ASM100:~$ kubectl apply -f /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-infra/kibana/kibana-ingress.yaml -n toy-infra
+ingress.networking.k8s.io/kibana created
+
+ziqiao@ziqiao-ASM100:~$ cat /etc/hosts
+127.0.0.1 localhost
+127.0.1.1 ziqiao-ASM100
+
+# The following lines are desirable for IPv6 capable hosts
+::1     ip6-localhost ip6-loopback
+fe00::0 ip6-localnet
+ff00::0 ip6-mcastprefix
+ff02::1 ip6-allnodes
+ff02::2 ip6-allrouters
+192.168.40.23 kafka-ui.homelab.local
+192.168.40.23 kibana.homelab.local
+
+ziqiao@ziqiao-ASM100:~$ kubectl get ingress -n toy-infra
+NAME       CLASS   HOSTS                    ADDRESS         PORTS   AGE
+kafka-ui   nginx   kafka-ui.homelab.local   192.168.40.23   80      4d
+kibana     nginx   kibana.homelab.local     192.168.40.23   80      92s
