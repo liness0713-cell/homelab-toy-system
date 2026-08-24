@@ -1,0 +1,31 @@
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: my-es
+  namespace: toy-infra
+spec:
+  version: 9.5.2
+  nodeSets:
+    - name: default
+      count: 1
+      config:
+        node.store.allow_mmap: false
+      volumeClaimTemplates:
+        - metadata:
+            name: elasticsearch-data
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 16Gi
+            storageClassName: local-storage
+            selector:
+              matchLabels:
+                app: es
+
+
+# 几个关键点解释一下：
+# node.store.allow_mmap: false — 这是ECK官方文档给单节点/homelab场景的标准建议，跳过mmap内存映射的内核参数调优(生产环境通常需要调vm.max_map_count这个宿主机内核参数，homelab场景先关掉这个要求，省一步系统配置)
+# volumeClaimTemplates.spec.selector.matchLabels.app: es — 语法上和Kafka那次不同(ES这边用的是K8s原生的matchLabels嵌套写法，不是Strimzi自定义的扁平写法)，这次是ECK自己的CRD schema决定的，跟之前Kafka那次“selector格式踩坑”属于同一类问题(不同Operator的CRD各自定义自己的字段格式，不能想当然套用)
+# namespace: toy-infra — 跟kafka-ui、Kafka集群放在同一个namespace，方便管理，Operator本身虽然在elastic-system，但它管理的具体ES集群资源可以指定到任意namespace
