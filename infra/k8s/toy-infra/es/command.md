@@ -318,6 +318,32 @@ kubectl run curl-test --rm -it --image=curlimages/curl --restart=Never -n toy-in
 如果一切正常，应该能看到一段JSON，里面有"cluster_name":"my-es"、"tagline":"You Know, for Search"这样的字段，就说明网络链路、认证都是通的。
 
 ```
+拆开逐段讲：
+
+kubectl run curl-test --rm -it --image=curlimages/curl --restart=Never -n toy-infra
+
+这部分是在临时起一个一次性Pod，专门用来跑curl这个测试命令。逐个参数看：
+
+kubectl run curl-test — 创建一个名叫curl-test的Pod（这是我们之前一直用kubectl apply -f xxx.yaml的方式创建资源，这里换成了更轻量的kubectl run——适合"我只是想临时跑个东西，不想为它专门写一份yaml文件"的场景，一次性、用完就扔）
+--image=curlimages/curl — 指定这个Pod用哪个镜像，curlimages/curl是一个专门为"只装了curl工具"打包的极简镜像，社区标准的debug工具镜像，几MB大小，秒拉
+--restart=Never — 告诉K8s"这个Pod跑完一次就结束，别按Deployment那种逻辑反复重启它"——因为curl命令执行完就该退出，不是一个需要常驻的服务
+--rm — Pod运行结束后自动删除，不会在你的kubectl get pods里留下一堆用过一次的垃圾Pod，很适合这种"测试完就不需要了"的场景
+-it — -i(interactive，保持标准输入打开)+ -t(tty，分配一个虚拟终端)，两个参数一起用的效果是"让你能看到这个Pod的实时输出，就像直接在本地终端跑命令一样"，如果不加这两个参数，Pod在后台跑完，你压根看不到curl的输出结果
+-n toy-infra — 指定这个临时Pod创建在toy-infra这个namespace——这一点很关键，因为K8s内部DNS(还记得.svc.cluster.local那次讨论吗)在同一个namespace内，可以直接用Service短名字互相访问；如果这个测试Pod创建在别的namespace，就必须写my-es-es-http.toy-infra.svc.cluster.local这样的完整域名才能访问到ES
+-- curl -u elastic:密码 -k https://my-es-es-http:9200
+
+这部分是"这个Pod启动后，实际要执行的命令"，前面的--是分隔符，意思是"到这里为止都是给kubectl run自己的参数，后面的都是丢进Pod里执行的命令"：
+
+curl — 发起一个HTTP请求的命令行工具
+-u elastic:密码 — HTTP Basic认证，格式是用户名:密码，elastic是ES默认内置的超级管理员账号，密码就是你之前从Secret里取出来的那串字符
+-k — 跳过SSL证书校验（因为ECK给ES自动生成的是自签名证书，不是权威CA签发的，curl默认会因为"不认识这个证书颁发者"而拒绝连接，-k就是告诉curl"这次先不较真证书是不是权威机构签的，硬连上去"——生产环境不建议长期这样做，但homelab验证阶段没问题）
+https://my-es-es-http:9200 — 请求的目标地址，my-es-es-http是ES的Service短名字(在同namespace内不用写全称)，9200是ES对外提供HTTP API的标准端口
+整体效果
+
+这条命令的完整意思是："临时起一个装了curl的一次性Pod，在里面用elastic账号+密码，通过HTTPS向ES的Service地址发一个请求，把返回结果打印给我看，看完这个Pod自动销毁"——本质上是在**用最小成本，验证"ES这个Service是否可达、认证信息是否正确"**这两件事，不需要为了测试专门写一份yaml、专门留一个常驻Pod。
+```
+
+```
 kubectl run curl-test --rm -it --image=curlimages/curl --restart=Never -n toy-infra -- \=Never -n toy-infra -- \
   curl -u elastic:pkPFLiFqJNTqZ5JiROHU7nhL -k https://my-es-es-http:9200
 All commands and output from this session will be recorded in container logs, including credentials and sensitive information passed through the command prompt.
@@ -347,7 +373,7 @@ pod "curl-test" deleted from toy-infra namespace
 
 ## Step 3：装Kibana（同一个ECK Operator管理，CR结构和ES非常像）
 bash
-cd /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-infra/es
+cd /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-infra/kibana
 
 cat <<'EOF' > kibana.yaml
 apiVersion: kibana.k8s.elastic.co/v1
@@ -362,7 +388,7 @@ spec:
     name: my-es
 EOF
 
-kubectl apply -f /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-infra/es/kibana.yaml
+kubectl apply -f /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-infra/kibana/kibana.yaml
 
 关键点：elasticsearchRef.name: my-es——这一行是Kibana和ES"配对"的关键，Operator看到这个引用后，会自动帮Kibana注入连接ES所需的地址和认证信息，不需要你手动填ES的地址和密码，这是ECK这种同厂商Operator比kafka-ui那种"手动填bootstrap地址"更省心的地方(因为Kibana和ES是同一个Operator统一管理的两种CRD，能互相感知)。
 
@@ -377,3 +403,112 @@ kubectl get svc -n toy-infra
 HEALTH变成green、PHASE变成Ready就算成功。之后如果你想让Kibana也能从宿主机浏览器访问，我们可以照搬kafka-ui那套Ingress流程，加一个kibana.homelab.local的域名映射。
 
 先跑完Step1-2验证连通性，把结果贴给我，再继续看Step3-4的Kibana装配是否顺利。
+
+
+ziqiao@ziqiao-ASM100:~$ kubectl apply -f /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-infra/es/kibana.yaml
+kibana.kibana.k8s.elastic.co/my-kibana created
+ziqiao@ziqiao-ASM100:~$ kubectl get kibana -n toy-infra
+NAME        HEALTH   NODES   VERSION   AGE
+my-kibana   green    1       9.5.2     116s
+ziqiao@ziqiao-ASM100:~$ kubectl get pods -n toy-infra
+NAME                                        READY   STATUS    RESTARTS        AGE
+kafka-ui-6d4b99c65b-pcq2v                   1/1     Running   2 (67m ago)     4d
+my-es-es-default-0                          1/1     Running   0               20m
+my-kafka-dual-role-0                        1/1     Running   5 (2d22h ago)   7d
+my-kafka-entity-operator-6d9c4cbfd-8fbjp    2/2     Running   16 (66m ago)    7d
+my-kibana-kb-79b9d6f654-nplm8               1/1     Running   0               118s
+strimzi-cluster-operator-5b4ff798cc-7bnk7   1/1     Running   6 (2d22h ago)   7d8h
+ziqiao@ziqiao-ASM100:~$ kubectl get svc -n toy-infra
+NAME                       TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)                               AGE
+kafka-ui                   ClusterIP   10.43.111.171   <none>        80/TCP                                4d
+my-es-es-default           ClusterIP   None            <none>        9200/TCP                              20m
+my-es-es-http              ClusterIP   10.43.7.172     <none>        9200/TCP                              20m
+my-es-es-internal-http     ClusterIP   10.43.77.165    <none>        9200/TCP                              20m
+my-es-es-transport         ClusterIP   None            <none>        9300/TCP                              20m
+my-kafka-kafka-bootstrap   ClusterIP   10.43.50.129    <none>        9091/TCP,9092/TCP                     7d
+my-kafka-kafka-brokers     ClusterIP   None            <none>        9090/TCP,9091/TCP,8443/TCP,9092/TCP   7d
+my-kibana-kb-http          ClusterIP   10.43.93.101    <none>        5601/TCP                              2m2s
+
+
+
+两件事都顺利完成——ES连通性验证成功(能看到cluster_name: my-es、tagline: You Know, for Search这段标准返回)，Kibana也是一次性部署成功，HEALTH: green，my-kibana-kb-http这个Service(端口5601，Kibana的标准端口)也生成了。
+
+一个安全层面值得提醒的点
+
+刚才那条kubectl run curl-test的输出里有这一行提示，容易被忽略但值得认真对待：
+
+```
+All commands and output from this session will be recorded in container logs, including credentials and sensitive information passed through the command prompt.
+
+也就是说，你那次把ES密码明文写进命令行执行，这个密码已经被记录进了容器日志里——虽然这个测试Pod本身因为--rm已经自动删除了，日志大概率随Pod一起清理掉了，但这是一个值得养成的习惯性风险点：以后类似场景，尽量避免把密码明文写在命令行参数里，比较稳妥的做法是用环境变量间接传入，或者用K8s自己的方式直接从Secret挂载，不经过命令行这一层。这次因为是一次性调试、Pod也删了，实际风险很低，不用紧张，只是提醒你以后处理更敏感的凭证（比如以后接入真实业务数据）时，养成这个习惯。
+```
+
+现在Kibana要不要也走Ingress，让宿主机浏览器能直接打开
+
+跟kafka-ui完全一样的模式，直接给你：
+
+bash
+cd /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-infra/kibana
+
+cat <<'EOF' > kibana-ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kibana
+  namespace: toy-infra
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: kibana.homelab.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: my-kibana-kb-http
+                port:
+                  number: 5601
+EOF
+
+kubectl apply -f /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-infra/kibana/kibana-ingress.yaml -n toy-infra
+
+但这里有个跟kafka-ui不一样的地方要留意：Kibana的Service本身也是HTTPS(ECK默认给所有组件都开了TLS)，nginx-ingress默认是按HTTP方式转发到后端的，如果后端实际监听的是HTTPS，需要多加一个annotation告诉nginx"往后端转发时也用HTTPS协议"：
+
+bash
+cat <<'EOF' > kibana-ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kibana
+  namespace: toy-infra
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: kibana.homelab.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: my-kibana-kb-http
+                port:
+                  number: 5601
+EOF
+
+kubectl apply -f kibana-ingress.yaml -n toy-infra
+
+宿主机加一条DNS解析：
+
+bash
+echo "192.168.40.23 kibana.homelab.local" | sudo tee -a /etc/hosts
+
+浏览器打开https://kibana.homelab.local(注意这次是https，浏览器可能会因为自签名证书报警告，选择"继续访问"即可)，登录账号密码就是elastic/你之前取到的那串密码。
+
+要现在跑这几步吗？
