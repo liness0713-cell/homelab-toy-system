@@ -508,3 +508,22 @@ ziqiao@ziqiao-ASM100:~$ kubectl get ingress -n toy-infra
 NAME       CLASS   HOSTS                    ADDRESS         PORTS   AGE
 kafka-ui   nginx   kafka-ui.homelab.local   192.168.40.23   80      4d
 kibana     nginx   kibana.homelab.local     192.168.40.23   80      92s
+
+
+
+
+一切都对上了——/etc/hosts两条域名解析都在，kubectl get ingress显示两个Ingress都拿到了ADDRESS(说明nginx-ingress controller已经正确接管并分配好了)。
+
+现在可以打开浏览器验证：
+
+https://kibana.homelab.local
+
+（注意是https，浏览器大概率会跳一个"您的连接不是私密连接"之类的证书警告——这是预期的，因为ECK给Kibana用的是自签名证书，点"高级"→"继续访问"即可，这不是配置错误）
+
+登录页出现后，账号elastic，密码用之前取到的那串（kubectl get secret my-es-es-elastic-user -n toy-infra -o jsonpath='{.data.elastic}' | base64 -d）。
+
+登录成功后，可以顺手在Kibana的"Stack Management" → "Index Management"里确认一下当前ES是空的(没有索引)——这是符合预期的，因为我们还没往ES里写过任何数据，等以后有实际数据(比如日志、业务事件)接进来才会看到索引。
+
+到这里为止，Kafka + kafka-ui + Elasticsearch + Kibana这一整套中间件基础设施就都搭起来了，而且这次全程走的是"CRD + Operator"这套K8s原生范式(Strimzi管Kafka，ECK管ES/Kibana)，local-storage这个StorageClass、每个组件独立打标签的PV(app: kafka/app: es)、Ingress暴露方式，这套架构模式在两个完全不同的中间件上跑通了两遍，说明这套思路是通用可复制的——以后如果再加别的有状态服务，基本可以照搬这个流程框架。
+
+浏览器打开确认一下能正常登录，如果一切顺利，这条基础设施搭建的主线就算告一段落了；如果登录或界面有任何异常，随时贴给我。
