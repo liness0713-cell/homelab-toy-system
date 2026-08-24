@@ -443,8 +443,7 @@ All commands and output from this session will be recorded in container logs, in
 也就是说，你那次把ES密码明文写进命令行执行，这个密码已经被记录进了容器日志里——虽然这个测试Pod本身因为--rm已经自动删除了，日志大概率随Pod一起清理掉了，但这是一个值得养成的习惯性风险点：以后类似场景，尽量避免把密码明文写在命令行参数里，比较稳妥的做法是用环境变量间接传入，或者用K8s自己的方式直接从Secret挂载，不经过命令行这一层。这次因为是一次性调试、Pod也删了，实际风险很低，不用紧张，只是提醒你以后处理更敏感的凭证（比如以后接入真实业务数据）时，养成这个习惯。
 ```
 
-现在Kibana要不要也走Ingress，让宿主机浏览器能直接打开
-
+## 现在Kibana要不要也走Ingress，让宿主机浏览器能直接打开
 跟kafka-ui完全一样的模式，直接给你：
 
 bash
@@ -477,34 +476,8 @@ kubectl apply -f /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-infra/k
 
 但这里有个跟kafka-ui不一样的地方要留意：Kibana的Service本身也是HTTPS(ECK默认给所有组件都开了TLS)，nginx-ingress默认是按HTTP方式转发到后端的，如果后端实际监听的是HTTPS，需要多加一个annotation告诉nginx"往后端转发时也用HTTPS协议"：
 
-bash
-cat <<'EOF' > kibana-ingress.yaml
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: kibana
-  namespace: toy-infra
-  annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /
-    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
-spec:
-  ingressClassName: nginx
-  rules:
-    - host: kibana.homelab.local
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: my-kibana-kb-http
-                port:
-                  number: 5601
-EOF
 
-kubectl apply -f kibana-ingress.yaml -n toy-infra
-
-宿主机加一条DNS解析：
+## 宿主机加一条DNS解析：
 
 bash
 echo "192.168.40.23 kibana.homelab.local" | sudo tee -a /etc/hosts

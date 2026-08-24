@@ -19,3 +19,6 @@ spec:
                 name: my-kibana-kb-http
                 port:
                   number: 5601
+
+# 但这里有个跟kafka-ui不一样的地方要留意：Kibana的Service本身也是HTTPS(ECK默认给所有组件都开了TLS)，nginx-ingress默认是按HTTP方式转发到后端的，
+# 如果后端实际监听的是HTTPS，需要多加一个annotation告诉nginx"往后端转发时也用HTTPS协议"
