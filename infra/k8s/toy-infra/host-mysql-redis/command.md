@@ -192,3 +192,67 @@ All commands and output from this session will be recorded in container logs, in
 If you don't see a command prompt, try pressing enter.
 Session ended, resume using 'kubectl attach redis-test -c redis-test -n toy-infra -i -t' command
 pod "redis-test" deleted from toy-infra namespace
+
+
+两边都验证成功——MySQL能看到toy_policy_db这个库(说明连的确实是你已有数据的实例，不是一个空白新库)，RedisPONG应答正常。至此，中间件清单里MySQL、Redis(宿主机)+Kafka、Elasticsearch(k3s集群内)这两大类都已经打通，回到最开始你贴的那张表：
+
+中间件	位置	状态
+MySQL、Redis	宿主机(Docker常驻)，无selector Service	✅ 完成
+Kafka、Elasticsearch	k3s集群内(Operator部署，toy-infra namespace)	✅ 完成
+
+这标志着最初行动指南里"中间件"这一大项全部落地，按你之前定的顺序：
+
+1. Namespace ✅
+2. 本地私有仓库(registry:2) ✅（Docker ps里能看到local-registry在跑）
+3. Kafka/ES 用Operator装进toy-infra ✅
+4. MySQL/Redis 的无selector Service ✅（刚完成）
+5. 打包推送5个业务服务镜像 ← 下一步
+6. ConfigMap/Secret
+7. Deployment/Service/Ingress
+一个小提醒，顺手说一下（不紧急，但值得记一下）
+
+刚才mysql-test那次会话，你在命令行交互过程中输入了-u root -p然后在提示符里敲了密码——这次密码没有直接出现在kubectl run的命令行参数里（这点比之前ES那次好，因为MySQL client是交互式让你另外输入密码，不是明文写在命令里），但session本身依然被记录进了容器日志（工具的警告提示里写得很清楚）。这个风险比ES那次更低，不用特别处理，只是让你对这套"临时Pod+kubectl run"的调试方式有个持续的认知。
+
+下一步：Step5，打包推送5个业务服务镜像到本地registry
+
+要现在开始这一步吗？如果开始，需要先了解一下你这5个业务服务目前的情况——它们现在是以什么形式存在的（比如已经有Dockerfile了吗，还是需要先帮你写；是Java/Spring Boot项目吗，跟你profile里提到的技术栈对得上）？
+
+
+
+好的，我在下一论会话里，说那5个pod的事情。。。现在我想问另一件事。刚才起临时容器的时候，镜像，用了mysql:8.4和redis:7，这和我宿主机里是一样的服务端。。。我理解测试连通性只需要客户端就行了，用这么重的镜像，其实是这种服务端也可以充当客户端来测试吗？
+
+你的理解完全正确——这是"顺手用了大而全的镜像"，不是必须用服务端镜像才能测客户端连接。原因很简单：
+
+为什么"服务端镜像"里也有客户端工具
+
+mysql:8.4和redis:7这两个官方镜像，为了让你能直接docker exec进容器手动管理/调试数据库，打包时把"服务端进程"和"命令行客户端工具"塞进了同一个镜像里——mysql:8.4镜像里既有MySQL的服务端主程序，也有mysql这个命令行客户端；redis:7同理，既有redis-server，也有redis-cli。我们那次kubectl run起来的临时Pod，没有启动里面的服务端进程（也没让它去执行docker-entrypoint.sh那套服务端启动流程），只是借用了镜像里"顺带打包"的客户端工具，跑一次mysql -h ...或redis-cli -h ...就退出了。
+
+这样做的代价：镜像体积不必要地大、拉取慢
+
+mysql:8.4这个镜像通常有几百MB，redis:7稍微轻一些但也比"纯客户端"重不少——如果只是想测连通性，这部分体积完全是浪费，尤其你以后如果要频繁做这种连通性测试，每次都拉这么大的镜像会拖慢节奏。
+
+更轻量的做法：专门的客户端镜像 / 万能调试镜像
+
+方式一：用官方社区维护的"纯客户端"镜像
+
+bash
+# MySQL纯客户端(比全量镜像小得多)
+kubectl run mysql-test --rm -it --image=imega/mysql-client -n toy-infra -- \
+  mysql -h mysql -u root -p
+
+# Redis纯客户端
+kubectl run redis-test --rm -it --image=redis:7-alpine -n toy-infra -- \
+  redis-cli -h redis ping
+
+redis:7-alpine这个变体本身已经比redis:7小很多(基于Alpine Linux这种极简发行版)，同样内置了redis-cli，是个不错的折中；MySQL这边社区有专门的imega/mysql-client之类的纯客户端镜像(体积通常只有几十MB)。
+
+方式二：一个镜像打天下——nicolaka/netshoot
+
+这是网络调试圈很常用的一个"瑞士军刀"镜像，装了curl、dig、nc、mysql、redis-cli等一大堆常用调试工具，以后不管测HTTP、DNS、TCP端口连通性、还是数据库客户端连接，都可以复用同一个镜像，不用每次都想"这次该拉哪个专用镜像"：
+
+bash
+kubectl run debug --rm -it --image=nicolaka/netshoot -n toy-infra -- bash
+# 进去之后想测什么就用什么：mysql -h mysql -u root -p / redis-cli -h redis ping / curl https://my-es-es-http:9200 -k
+建议
+
+如果你以后会频繁做这类连通性调试(不只是这次)，nicolaka/netshoot这种通用调试镜像是最省心的选择——一次拉取，之后测任何服务都能用，比每次纠结"这次该用哪个专用客户端镜像"更高效。如果只是偶尔测一次，直接沿用服务端镜像(像你刚才那样)也完全没问题，多等几秒钟拉镜像的时间，换来不用记那么多镜像名字，这也是一种合理的取舍。
