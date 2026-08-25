@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: toy-infra
+spec:
+  ports:
+    - port: 6379
+      targetPort: 6379
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: redis
+  namespace: toy-infra
+  labels:
+    kubernetes.io/service-name: redis
+addressType: IPv4
+ports:
+  - name: ""
+    port: 6379
+    protocol: TCP
+endpoints:
+  - addresses:
+      - "192.168.40.23"
