@@ -128,3 +128,67 @@ kubectl run redis-test --rm -it --image=redis:7 --restart=Never -n toy-infra -- 
 
 ##
 先跑Service+EndpointSlice这两步apply，把结果贴给我，我们确认kubectl get svc -n toy-infra能看到mysql和redis两个新条目，再一起验证连通性。
+
+
+ziqiao@ziqiao-ASM100:~$ kubectl apply -f /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-infra/host-mysql-redis/mysql-service.yaml
+service/mysql created
+endpointslice.discovery.k8s.io/mysql created
+
+ziqiao@ziqiao-ASM100:~$ kubectl apply -f /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-infra/host-mysql-redis/redis-service.yaml
+service/redis created
+endpointslice.discovery.k8s.io/redis created
+
+ziqiao@ziqiao-ASM100:~$ kubectl get svc -n toy-infra
+NAME                       TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)                               AGE
+kafka-ui                   ClusterIP   10.43.111.171   <none>        80/TCP                                5d
+my-es-es-default           ClusterIP   None            <none>        9200/TCP                              24h
+my-es-es-http              ClusterIP   10.43.7.172     <none>        9200/TCP                              24h
+my-es-es-internal-http     ClusterIP   10.43.77.165    <none>        9200/TCP                              24h
+my-es-es-transport         ClusterIP   None            <none>        9300/TCP                              24h
+my-kafka-kafka-bootstrap   ClusterIP   10.43.50.129    <none>        9091/TCP,9092/TCP                     8d
+my-kafka-kafka-brokers     ClusterIP   None            <none>        9090/TCP,9091/TCP,8443/TCP,9092/TCP   8d
+my-kibana-kb-http          ClusterIP   10.43.93.101    <none>        5601/TCP                              24h
+mysql                      ClusterIP   10.43.144.58    <none>        3306/TCP                              27s
+redis                      ClusterIP   10.43.240.8     <none>        6379/TCP                              12s
+
+ziqiao@ziqiao-ASM100:~$ kubectl run mysql-test --rm -it --image=mysql:8.4 --restart=Never -n toy-infra -- \
+  mysql -h mysql -u root -p
+All commands and output from this session will be recorded in container logs, including credentials and sensitive information passed through the command prompt.
+If you don't see a command prompt, try pressing enter.
+
+Welcome to the MySQL monitor.  Commands end with ; or \g.
+Your MySQL connection id is 621
+Server version: 8.4.10 MySQL Community Server - GPL
+
+Copyright (c) 2000, 2026, Oracle and/or its affiliates.
+
+Oracle is a registered trademark of Oracle Corporation and/or its
+affiliates. Other names may be trademarks of their respective
+owners.
+
+Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.
+
+mysql> SHOW DATABASES;
++--------------------+
+| Database           |
++--------------------+
+| information_schema |
+| mysql              |
+| performance_schema |
+| sys                |
+| toy_policy_db      |
++--------------------+
+5 rows in set (0.12 sec)
+
+mysql> exit
+Bye
+Session ended, resume using 'kubectl attach mysql-test -c mysql-test -n toy-infra -i -t' command
+pod "mysql-test" deleted from toy-infra namespace
+
+ziqiao@ziqiao-ASM100:~$ kubectl run redis-test --rm -it --image=redis:7 --restart=Never -n toy-infra -- \
+  redis-cli -h redis ping
+PONG
+All commands and output from this session will be recorded in container logs, including credentials and sensitive information passed through the command prompt.
+If you don't see a command prompt, try pressing enter.
+Session ended, resume using 'kubectl attach redis-test -c redis-test -n toy-infra -i -t' command
+pod "redis-test" deleted from toy-infra namespace
