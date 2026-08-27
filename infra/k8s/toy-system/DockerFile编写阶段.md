@@ -563,3 +563,198 @@ lifecycle:
 更贴近CI/CD实践的写法：用git commit的短哈希
 docker build -t localhost:5000/gateway-service:$(git rev-parse --short HEAD) .
 docker push localhost:5000/gateway-service:$(git rev-parse --short HEAD)
+
+
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/gateway-service$ git rev-parse --short HEAD
+aa018de
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/gateway-service$ docker build -t localhost:5000/gateway-service:$(git rev-parse --short HEAD) .
+[+] Building 84.7s (15/15) FINISHED                                                                                                                                      docker:default
+ => [internal] load build definition from Dockerfile                                                                                                                               0.1s
+ => => transferring dockerfile: 423B                                                                                                                                               0.0s
+ => [internal] load metadata for docker.io/library/eclipse-temurin:21-jre                                                                                                          2.9s
+ => [internal] load metadata for docker.io/library/maven:3.9-eclipse-temurin-21                                                                                                    2.8s
+ => [internal] load .dockerignore                                                                                                                                                  0.0s
+ => => transferring context: 2B                                                                                                                                                    0.0s
+ => [build 1/6] FROM docker.io/library/maven:3.9-eclipse-temurin-21@sha256:8f6ac126f7810bb5549c4cd122d2bf0e9cda5bdeb0838aa928f09e779fd8bef8                                       19.4s
+ => => resolve docker.io/library/maven:3.9-eclipse-temurin-21@sha256:8f6ac126f7810bb5549c4cd122d2bf0e9cda5bdeb0838aa928f09e779fd8bef8                                              0.0s
+ => => sha256:64a6c1453330f404b242e29601aff23ef3fe4df7c97a84d8d9080960d94c1298 157B / 157B                                                                                         0.2s
+ => => sha256:683ce163c108681616300eae2688ddcc0580cd389b7c7c07cd903c4bbdcc653c 852B / 852B                                                                                         0.3s
+ => => sha256:a76275fb922244ec92a6af130e3765f67ac01cf4ed48cf8e831b84d3dd2567c3 9.36MB / 9.36MB                                                                                     2.6s
+ => => sha256:36fb033b00a223493a1b749e60d35e4be517cd2ae90bbd13e7a456b55e2473c8 22.55MB / 22.55MB                                                                                   1.5s
+ => => sha256:6611c962e4e868c8389afb820aefdb6b9762a3732109b8c7bb8f08b38e3689c2 2.46kB / 2.46kB                                                                                     0.3s
+ => => sha256:48b7756512f94eac42020a2d9ae9b3479831acd498e854b5d78a439f5408bb3a 157B / 157B                                                                                         0.3s
+ => => sha256:887642163ab8a5862b92cfba1d05411fc8810a79d6de0edfdbada79d635e2b8f 158.12MB / 158.12MB                                                                                 7.9s
+ => => sha256:2b31ee5335cc859ac582c9a4043918fba00087e7d800909381874b459878f52c 22.93MB / 22.93MB                                                                                   6.1s
+ => => sha256:0926a8eb0e608a5c6888d1cd5594184bdf3ed3aa311dba5b42a547caefdc6f2e 29.75MB / 29.75MB                                                                                   3.0s
+ => => extracting sha256:0926a8eb0e608a5c6888d1cd5594184bdf3ed3aa311dba5b42a547caefdc6f2e                                                                                          0.9s
+ => => extracting sha256:2b31ee5335cc859ac582c9a4043918fba00087e7d800909381874b459878f52c                                                                                          0.7s
+ => => extracting sha256:887642163ab8a5862b92cfba1d05411fc8810a79d6de0edfdbada79d635e2b8f                                                                                          2.0s
+ => => extracting sha256:48b7756512f94eac42020a2d9ae9b3479831acd498e854b5d78a439f5408bb3a                                                                                          0.0s
+ => => extracting sha256:6611c962e4e868c8389afb820aefdb6b9762a3732109b8c7bb8f08b38e3689c2                                                                                          0.0s
+ => => extracting sha256:36fb033b00a223493a1b749e60d35e4be517cd2ae90bbd13e7a456b55e2473c8                                                                                          0.9s
+ => => extracting sha256:a76275fb922244ec92a6af130e3765f67ac01cf4ed48cf8e831b84d3dd2567c3                                                                                          0.4s
+ => => extracting sha256:683ce163c108681616300eae2688ddcc0580cd389b7c7c07cd903c4bbdcc653c                                                                                          0.3s
+ => => extracting sha256:64a6c1453330f404b242e29601aff23ef3fe4df7c97a84d8d9080960d94c1298                                                                                          0.4s
+ => [internal] load build context                                                                                                                                                  0.1s
+ => => transferring context: 16.75kB                                                                                                                                               0.0s
+ => [stage-1 1/3] FROM docker.io/library/eclipse-temurin:21-jre@sha256:7a65df4b22d2de92d4e04056e884f3b9122d70b21e2847fd66084278bd0ce037                                           18.1s
+ => => resolve docker.io/library/eclipse-temurin:21-jre@sha256:7a65df4b22d2de92d4e04056e884f3b9122d70b21e2847fd66084278bd0ce037                                                    0.0s
+ => => sha256:f6795b7189ec73f2774735d97a688bf9205d69cf49ceeb539654ddd7d70efe53 2.46kB / 2.46kB                                                                                     0.4s
+ => => sha256:74d4de9c947ffb50bb6447a5c09e24df5e1685b1137f82406f33e6f44bba79d6 160B / 160B                                                                                         0.5s
+ => => sha256:369da5fd35f25c0fb072631703d8d88a171650f488410bd5e789af82b6b64b2d 53.10MB / 53.10MB                                                                                  16.4s
+ => => sha256:85685ec585baa5d5d2bc7a9b75a44b2a9633d8bafa3cf68a74e00f17cfd247be 20.13MB / 20.13MB                                                                                  10.3s
+ => => sha256:f3db1cd940786339b09d8a60e47c66fea9502d788e6fab5bec91a4a77d4ced1c 393B / 393B                                                                                         0.7s
+ => => sha256:06e9d71331fb2b620a4f6c8064e0f84b284bb69a42c7c57b1c962bd4a4cdee76 41.57MB / 41.57MB                                                                                   2.6s
+ => => extracting sha256:06e9d71331fb2b620a4f6c8064e0f84b284bb69a42c7c57b1c962bd4a4cdee76                                                                                          1.5s
+ => => extracting sha256:f3db1cd940786339b09d8a60e47c66fea9502d788e6fab5bec91a4a77d4ced1c                                                                                          0.0s
+ => => extracting sha256:85685ec585baa5d5d2bc7a9b75a44b2a9633d8bafa3cf68a74e00f17cfd247be                                                                                          0.6s
+ => => extracting sha256:369da5fd35f25c0fb072631703d8d88a171650f488410bd5e789af82b6b64b2d                                                                                          1.1s
+ => => extracting sha256:74d4de9c947ffb50bb6447a5c09e24df5e1685b1137f82406f33e6f44bba79d6                                                                                          0.0s
+ => => extracting sha256:f6795b7189ec73f2774735d97a688bf9205d69cf49ceeb539654ddd7d70efe53                                                                                          0.0s
+ => [stage-1 2/3] WORKDIR /app                                                                                                                                                     1.5s
+ => [build 2/6] WORKDIR /app                                                                                                                                                       0.2s
+ => [build 3/6] COPY pom.xml .                                                                                                                                                     0.1s
+ => [build 4/6] RUN mvn dependency:go-offline -B                                                                                                                                  49.8s
+ => [build 5/6] COPY src ./src                                                                                                                                                     0.1s
+ => [build 6/6] RUN mvn clean package -DskipTests -B                                                                                                                               8.6s
+ => [stage-1 3/3] COPY --from=build /app/target/*.jar app.jar                                                                                                                      0.2s
+ => exporting to image                                                                                                                                                             2.7s
+ => => exporting layers                                                                                                                                                            2.3s
+ => => exporting manifest sha256:4aeb05bce806938f1fc931ecb1ad9dfd7e302f7c4dcd3a56733a224801d16d99                                                                                  0.0s
+ => => exporting config sha256:a37ca8788a573acd2a4d85de2d68fec7a237cebdb0e438223f87ad2de65de920                                                                                    0.0s
+ => => exporting attestation manifest sha256:19e64129808abe29faa8e99b3bedfd5cdb5539d08e0950bef8bb2aba9ca38792                                                                      0.0s
+ => => exporting manifest list sha256:6888f987631c048991278ceaf5424bf5ab213af05834d09717c8035131365e30                                                                             0.0s
+ => => naming to localhost:5000/gateway-service:aa018de                                                                                                                            0.0s
+ => => unpacking to localhost:5000/gateway-service:aa018de       
+
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/gateway-service$ docker push localhost:5000/gateway-service:$(git rev-parse --short HEAD)
+The push refers to repository [localhost:5000/gateway-service]
+44136fa355b3: Pushed 
+f3db1cd94078: Pushed 
+06e9d71331fb: Pushed 
+85685ec585ba: Pushed 
+369da5fd35f2: Pushed 
+74d4de9c947f: Pushed 
+f6795b7189ec: Pushed 
+55eebb1d3e6a: Pushed 
+aaffa5c978b1: Pushed 
+210ba713b7a7: Pushed 
+aa018de: digest: sha256:6888f987631c048991278ceaf5424bf5ab213af05834d09717c8035131365e30 size: 856
+
+build 和 push都做了看似成功了，怎么进去registry:2看一眼
+
+build和push都成功了(推送日志显示每一层都Pushed，最后拿到了digest)。有两种方式确认registry里确实收到了这个镜像。
+
+方式一：直接用registry自带的HTTP API查（最直接，不用装额外工具）
+
+registry:2这个镜像本身实现了一套标准的Docker Registry HTTP API，可以直接用curl查：
+
+bash
+# 列出registry里有哪些镜像仓库(repository)
+curl http://localhost:5000/v2/_catalog
+
+# 看gateway-service这个仓库下有哪些tag
+curl http://localhost:5000/v2/gateway-service/tags/list
+
+第一条应该能看到{"repositories":["gateway-service"]}，第二条应该能看到{"name":"gateway-service","tags":["aa018de"]}——这就是最权威的确认，直接问registry本身"你现在存了什么"。
+
+方式二：进容器内部，直接看它存储数据的文件目录（更"底层"，能看到实际的存储结构）
+bash
+docker exec -it local-registry sh
+ls -la /var/lib/registry/docker/registry/v2/repositories/
+
+（local-registry是你之前docker ps里看到的容器名）
+
+这里能看到registry内部真实的目录结构——Docker Registry底层是按"内容寻址存储(content-addressable storage)"的方式组织文件的，每个镜像层按其内容的哈希值存放，这也是为什么之前docker push日志里每一层显示的是一串哈希(44136fa355b3这种)而不是有意义的名字——这些哈希本质上是每一层内容的"指纹"，相同内容的层，不管来自哪个镜像，只会存一份，这是Docker镜像分层机制天生自带的去重效果。
+
+建议直接用方式一确认，够用且直观
+bash
+curl http://localhost:5000/v2/_catalog
+curl http://localhost:5000/v2/gateway-service/tags/list
+
+跑一下，把输出贴给我确认。确认无误后，我们继续下一个服务——要按什么顺序（policy-service、notification-service、search-service剩下三个Java服务，还是先处理frontend）？
+
+
+frontend的dockerfile我基本看懂了，因为最后是一对html让nginx直接服务，不过还是精讲一下吧。我自己先推着，其他的问题不大
+
+好，逐行讲frontend的Dockerfile，重点讲跟Java那份不一样的地方。
+
+dockerfile
+# ---------- 构建阶段 ----------
+FROM node:22-alpine AS build
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm install
+COPY . .
+
+ARG VITE_API_BASE_URL=https://api.homelab.local
+ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
+RUN npm run build
+
+# ---------- 运行阶段 ----------
+FROM nginx:alpine
+COPY --from=build /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+EXPOSE 80
+FROM node:22-alpine AS build
+
+跟Java那份的maven:3.9-eclipse-temurin-21是同一个角色——只在构建阶段用得上的重型工具箱。node:22-alpine里装的是Node.js运行时+npm，专门用来跑npm install和npm run build这两步；alpine这个后缀是指基于Alpine Linux这个极简发行版做的镜像变体，比标准的Debian/Ubuntu底座小很多(通常几十MB vs 几百MB)，是社区里"能用alpine就用alpine"的惯例做法，前提是你的依赖没有奇怪的系统库兼容问题(React+Vite这种纯前端项目基本不会踩坑)。
+
+COPY package.json package-lock.json* ./ 和 RUN npm install拆开写——跟Java那份pom.xml先行是同一个道理
+
+这里package-lock.json*结尾那个*是个小技巧——意思是"如果这个文件存在就复制，不存在也不报错"，因为不确定你的项目是不是一定生成了lock文件，用通配符做个兼容。
+
+这一步存在的意义，跟之前Java那份COPY pom.xml+dependency:go-offline的动机完全一样——层缓存优化：只要package.json没变(没加新的npm包)，以后你改了src/下的React代码重新build，这一层(npm install，通常是整个前端构建里最耗时的一步)会直接复用缓存，不用重新走一遍npm的依赖解析和下载。
+
+COPY . .——这里跟Java那份不一样，一次性复制了全部内容，而不是只复制src
+
+Java那份是COPY src ./src(精确只复制源代码目录)，这里是COPY . .(整个项目目录都复制进去)——这不是疏忽，是两种项目结构习惯上的差异：前端项目里，vite.config.ts、tsconfig.json、index.html、public/这些散落在根目录的配置文件和静态资源，构建时都需要用到，全部单独一个个列出来太麻烦，直接COPY . .更省事。代价是：这样写，"层缓存"的粒度变粗了——只要你改了项目里任何一个文件(哪怕只是改了个README)，这一层缓存都会失效，连带下面的npm run build也要重跑；但因为前端项目通常不会像后端那样有"频繁改代码但完全不想重新build"的场景(改了代码本来就要重新build)，这个粗粒度缓存在实践中影响不大，是个可以接受的简化。
+
+ARG VITE_API_BASE_URL=... 和 ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}——这两行是我们之前专门讨论过的"构建时注入"机制
+
+ARG——声明一个"构建参数"，只在docker build执行期间存在，构建完成后这个变量就消失了，不会留在最终镜像里(这是ARG和ENV的本质区别之一)。docker build --build-arg VITE_API_BASE_URL=xxx就是从外部给这个ARG传值的方式，不传的话就用=后面写的默认值。
+
+ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}——这一行是把ARG的值转存成一个环境变量，因为ARG本身有个限制：它的值只在声明它的那一层里可见，不会自动传给后面的RUN指令，需要像这样显式转成ENV才能保证后面npm run build执行时能读到这个值(Vite在打包时，会去读运行环境的环境变量，把VITE_开头的变量替换进最终生成的JS文件里，这也是我们之前讲的"构建时写死、不是运行时读取"这件事的具体实现机制)。
+
+FROM nginx:alpine——第二阶段，回答你最初的疑问："为什么前端要用nginx"
+
+Vite/React写的代码，最终产物只是一堆纯静态文件(HTML+JS+CSS，没有任何服务端逻辑)——npm run build执行完，会在dist/目录下生成这些文件，之后唯一需要做的事情就是"把这些文件通过HTTP协议发出去"，这是一个纯粹的静态文件服务器该干的活。
+
+node本身虽然也能写一个简单的HTTP服务器去发这些文件(社区确实有serve这类npm包)，但用专门为"发送静态文件"这件事优化了几十年的nginx，性能和资源占用都远好于用Node.js现写一个——这就是为什么"构建用Node.js工具链，运行时换成nginx"是前端容器化的标准做法：构建阶段和运行阶段，需要的能力完全不同，构建需要"能跑npm/vite"，运行只需要"能把文件发出去"，没必要让最终跑着的容器一直背着整个Node.js运行时(而且Node本身也不是为高并发发送静态文件设计的工具)。
+
+COPY --from=build /app/dist /usr/share/nginx/html
+
+跟Java那份COPY --from=build ... app.jar是完全一样的模式——从build这个已经"死掉"的阶段里，只捞出真正需要的产物(dist目录)，/usr/share/nginx/html是nginx默认配置下"根目录该去哪找网页文件"的路径，这是nginx镜像自己的约定，不是我们随便起的。
+
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+这一行是把我们之前额外写的那份nginx.conf覆盖进nginx默认的配置位置——这一步是必须的，不能省，原因是nginx默认配置不知道你的React项目用了前端路由(React Router这类客户端路由库)，如果用户直接刷新一个非首页的URL(比如/policies/123)，nginx默认行为是"去硬盘上找一个真实存在的、叫policies/123的文件"，找不到就返回404——我们那份try_files $uri $uri/ /index.html配置的意思是"先试试这个路径对应的真实文件存不存在，都不存在的话，兜底返回index.html，把路由判断的工作交还给React自己在浏览器里处理"，这是所有单页应用(SPA)部署nginx时的标配写法。
+
+EXPOSE 80
+
+跟Java那份一样，纯粹是文档性声明。nginx:alpine这个基础镜像自己内部默认配置就是监听80端口，我们没有主动改过这个默认值，所以这里80跟"nginx实际会监听的端口"是真实对上的，不是随便写的数字。
+
+理解得很到位，剩下几个服务和push流程你自己推没问题的话就继续，有卡壳的地方随时贴过来。
+
+
+## 打包推送frontend
+docker build --build-arg VITE_API_BASE_URL=https://api.homelab.local -t localhost:5000/frontend:$(git rev-parse --short HEAD) .
+这里ARG给了默认值https://api.homelab.local，所以就算你以后忘了显式传--build-arg，也不会退回到localhost:8080这种明显错误的值，是个安全网。
+docker push localhost:5000/frontend:$(git rev-parse --short HEAD)
+
+## 打包推送gateway-service
+更贴近CI/CD实践的写法：用git commit的短哈希
+docker build -t localhost:5000/gateway-service:$(git rev-parse --short HEAD) .
+docker push localhost:5000/gateway-service:$(git rev-parse --short HEAD)
+
+## 打包推送notification-service
+docker build -t localhost:5000/notification-service:$(git rev-parse --short HEAD) .
+docker push localhost:5000/notification-service:$(git rev-parse --short HEAD)
+
+## 打包推送policy-service
+docker build -t localhost:5000/policy-service:$(git rev-parse --short HEAD) .
+docker push localhost:5000/policy-service:$(git rev-parse --short HEAD)
+
+## 打包推送search-service
+docker build -t localhost:5000/search-service:$(git rev-parse --short HEAD) .
+docker push localhost:5000/search-service:$(git rev-parse --short HEAD)
