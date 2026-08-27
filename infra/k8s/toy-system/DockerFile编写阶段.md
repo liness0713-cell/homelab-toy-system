@@ -737,24 +737,24 @@ EXPOSE 80
 理解得很到位，剩下几个服务和push流程你自己推没问题的话就继续，有卡壳的地方随时贴过来。
 
 
-## 打包推送frontend
+## 打包推送 frontend
 docker build --build-arg VITE_API_BASE_URL=https://api.homelab.local -t localhost:5000/frontend:$(git rev-parse --short HEAD) .
 这里ARG给了默认值https://api.homelab.local，所以就算你以后忘了显式传--build-arg，也不会退回到localhost:8080这种明显错误的值，是个安全网。
 docker push localhost:5000/frontend:$(git rev-parse --short HEAD)
 
-## 打包推送gateway-service
+## 打包推送 gateway-service
 更贴近CI/CD实践的写法：用git commit的短哈希
 docker build -t localhost:5000/gateway-service:$(git rev-parse --short HEAD) .
 docker push localhost:5000/gateway-service:$(git rev-parse --short HEAD)
 
-## 打包推送notification-service
+## 打包推送 notification-service
 docker build -t localhost:5000/notification-service:$(git rev-parse --short HEAD) .
 docker push localhost:5000/notification-service:$(git rev-parse --short HEAD)
 
-## 打包推送policy-service
+## 打包推送 policy-service
 docker build -t localhost:5000/policy-service:$(git rev-parse --short HEAD) .
 docker push localhost:5000/policy-service:$(git rev-parse --short HEAD)
 
-## 打包推送search-service
+## 打包推送 search-service
 docker build -t localhost:5000/search-service:$(git rev-parse --short HEAD) .
 docker push localhost:5000/search-service:$(git rev-parse --short HEAD)
