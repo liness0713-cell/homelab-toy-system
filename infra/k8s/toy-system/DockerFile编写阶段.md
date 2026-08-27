@@ -758,3 +758,199 @@ docker push localhost:5000/policy-service:$(git rev-parse --short HEAD)
 ## 打包推送 search-service
 docker build -t localhost:5000/search-service:$(git rev-parse --short HEAD) .
 docker push localhost:5000/search-service:$(git rev-parse --short HEAD)
+
+
+
+
+docker build --build-arg VITE_API_BASE_URL=https://api.homelab.local -t localhost:5000/frontend:$(git rev-parse --short HEAD) .
+[+] Building 4.4s (14/14) FINISHED                                                                                                                                       docker:default
+ => [internal] load build definition from Dockerfile                                                                                                                               0.0s
+ => => transferring dockerfile: 455B                                                                                                                                               0.0s
+ => [internal] load metadata for docker.io/library/nginx:alpine                                                                                                                    3.4s
+ => [internal] load metadata for docker.io/library/node:22-alpine                                                                                                                  3.4s
+ => [internal] load .dockerignore                                                                                                                                                  0.0s
+ => => transferring context: 2B                                                                                                                                                    0.0s
+ => [internal] load build context                                                                                                                                                  0.7s
+ => => transferring context: 64.15MB                                                                                                                                               0.6s
+ => [build 1/6] FROM docker.io/library/node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32                                                      0.7s
+ => => resolve docker.io/library/node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32                                                            0.1s
+ => => sha256:16da5a6403776464b5bf551ef294de57da242eac594527ea551a46e7f76ac2d6 0B / 445B                                                                                           0.4s
+ => => sha256:a2980c1fee17dfd6263234b253955e0e9d5f38d47c0e71c001139897134899d0 0B / 1.26MB                                                                                         0.4s
+ => => sha256:efbef6f9e333972a10ca323e700496a64e7ddcc3a6725e6afbbae52e690f4a4a 0B / 52.63MB                                                                                        0.4s
+ => => sha256:55afa1ecc21d2bb5e5045f32dafee56272ffd89860bac26f6c32123439af26a4 0B / 3.85MB                                                                                         0.4s
+ => [stage-1 1/3] FROM docker.io/library/nginx:alpine@sha256:db35bfc6b2951e7f8a72db5db120288c127ffaeeb4a6d4b95a26fead017d5913                                                      0.7s
+ => => resolve docker.io/library/nginx:alpine@sha256:db35bfc6b2951e7f8a72db5db120288c127ffaeeb4a6d4b95a26fead017d5913                                                              0.1s
+ => CANCELED [build 2/6] WORKDIR /app                                                                                                                                              0.0s
+ => CACHED [build 3/6] COPY package.json package-lock.json* ./                                                                                                                     0.0s
+ => CACHED [build 4/6] RUN npm install                                                                                                                                             0.0s
+ => CACHED [build 5/6] COPY . .                                                                                                                                                    0.0s
+ => CACHED [build 6/6] RUN npm run build                                                                                                                                           0.0s
+ => CANCELED [stage-1 2/3] COPY --from=build /app/dist /usr/share/nginx/html                                                                                                       0.0s
+ => ERROR [stage-1 3/3] COPY nginx.conf /etc/nginx/conf.d/default.conf                                                                                                             0.0s
+------
+ > [stage-1 3/3] COPY nginx.conf /etc/nginx/conf.d/default.conf:
+------
+Dockerfile:15
+--------------------
+  13 |     FROM nginx:alpine
+  14 |     COPY --from=build /app/dist /usr/share/nginx/html
+  15 | >>> COPY nginx.conf /etc/nginx/conf.d/default.conf
+  16 |     EXPOSE 80
+--------------------
+ERROR: failed to build: failed to solve: failed to compute cache key: failed to calculate checksum of ref fuuvzkm0zgzbkpei2fbah1kml::eu31e187nj1gz87aoye5aricb: "/nginx.conf": not found
+
+
+报错很明确——"/nginx.conf": not found，COPY这一步在**构建上下文(build context)**里找不到nginx.conf这个文件。原因很直接：你只创建了Dockerfile本身，那份nginx.conf文件(我之前给你的那段配置)还没有实际创建在你的项目目录里。
+
+什么是"构建上下文"，为什么这个概念决定了COPY能找到什么
+
+回顾一下之前docker build ... .这条命令最后那个单独的.——它的意思是"以当前目录为构建上下文"，Docker会把这个目录(以及它所有子目录，除非用.dockerignore排除)打包发送给构建进程，Dockerfile里所有的COPY指令，只能从这个上下文范围内取文件，不能访问上下文之外的任何路径。COPY nginx.conf ...这一行，找的就是"构建上下文根目录下，有没有一个叫nginx.conf的文件"——目前没有，所以报错。
+
+解决：把nginx.conf这个文件实际创建出来
+
+在你frontend项目根目录(跟Dockerfile同一层)：
+
+bash
+cat <<'EOF' > nginx.conf
+server {
+    listen 80;
+    location / {
+        root /usr/share/nginx/html;
+        try_files $uri $uri/ /index.html;
+    }
+}
+EOF
+
+创建完确认一下：
+
+bash
+ls -la
+
+应该能看到Dockerfile和nginx.conf在同一层目录下。
+
+重新build
+bash
+docker build --build-arg VITE_API_BASE_URL=https://api.homelab.local -t localhost:5000/frontend:$(git rev-parse --short HEAD) .
+顺带解释一下这次日志里几个有意思的细节，帮你巩固之前学的缓存机制
+
+注意这几行：
+
+=> CACHED [build 3/6] COPY package.json package-lock.json* ./   0.0s
+=> CACHED [build 4/6] RUN npm install                            0.0s
+=> CACHED [build 5/6] COPY . .                                   0.0s
+=> CACHED [build 6/6] RUN npm run build                          0.0s
+
+这次报错发生在stage-1(运行阶段)的最后一步，但build阶段(第一阶段，npm install+build)全部走的是缓存——这正好印证了我们之前聊的"层缓存独立判断"：即便这次build最终失败了，Docker依然保留了之前那次(失败前)已经成功执行的层，所以这次重新build，前面npm install、npm run build这些耗时的步骤会直接complete瞬间跳过(0.0s)，只需要重新跑stage-1剩下那两步——不用担心"上次失败了是不是全部要重来"，Docker的缓存机制天然帮你避免了这种浪费。
+
+添加nginx.conf文件后重新跑，应该能顺利通过。
+
+
+
+
+
+docker build -t localhost:5000/notification-service:$(git rev-parse --short HEAD) .
+[+] Building 4.1s (10/14)                                                                                                                                                docker:default
+ => [internal] load build definition from Dockerfile                                                                                                                               0.0s
+ => => transferring dockerfile: 423B                                                                                                                                               0.0s
+ => [internal] load metadata for docker.io/library/eclipse-temurin:21-jre                                                                                                          1.3s
+ => [internal] load metadata for docker.io/library/maven:3.9-eclipse-temurin-21                                                                                                    1.3s
+ => [internal] load .dockerignore                                                                                                                                                  0.0s
+ => => transferring context: 2B                                                                                                                                                    0.0s
+ => [build 1/6] FROM docker.io/library/maven:3.9-eclipse-temurin-21@sha256:8f6ac126f7810bb5549c4cd122d2bf0e9cda5bdeb0838aa928f09e779fd8bef8                                        0.1s
+ => => resolve docker.io/library/maven:3.9-eclipse-temurin-21@sha256:8f6ac126f7810bb5549c4cd122d2bf0e9cda5bdeb0838aa928f09e779fd8bef8                                              0.1s
+ => [stage-1 1/3] FROM docker.io/library/eclipse-temurin:21-jre@sha256:7a65df4b22d2de92d4e04056e884f3b9122d70b21e2847fd66084278bd0ce037                                            0.1s
+ => => resolve docker.io/library/eclipse-temurin:21-jre@sha256:7a65df4b22d2de92d4e04056e884f3b9122d70b21e2847fd66084278bd0ce037                                                    0.1s
+ => [internal] load build context                                                                                                                                                  0.0s
+ => => transferring context: 861B                                                                                                                                                  0.0s
+ => CACHED [build 2/6] WORKDIR /app                                                                                                                                                0.0s
+ => CACHED [build 3/6] COPY pom.xml .                                                                                                                                              0.0s
+ => ERROR [build 4/6] RUN mvn dependency:go-offline -B                                                                                                                             2.5s
+------                                                                                                                                                                                  
+ > [build 4/6] RUN mvn dependency:go-offline -B:                                                                                                                                        
+1.705 [INFO] Scanning for projects...
+2.008 [INFO] Downloading from central: https://repo.maven.apache.org/maven2/com/toysystem/homelab-toy-system/0.1.0/homelab-toy-system-0.1.0.pom
+2.474 [ERROR] [ERROR] Some problems were encountered while processing the POMs:
+2.474 [FATAL] Non-resolvable parent POM for com.toysystem:notification-service:0.1.0: The following artifacts could not be resolved: com.toysystem:homelab-toy-system:pom:0.1.0 (absent): Could not find artifact com.toysystem:homelab-toy-system:pom:0.1.0 in central (https://repo.maven.apache.org/maven2) and 'parent.relativePath' points at wrong local POM @ line 7, column 11
+2.474  @ 
+2.475 [ERROR] The build could not read 1 project -> [Help 1]
+2.475 [ERROR]   
+2.475 [ERROR]   The project com.toysystem:notification-service:0.1.0 (/app/pom.xml) has 1 error
+2.475 [ERROR]     Non-resolvable parent POM for com.toysystem:notification-service:0.1.0: The following artifacts could not be resolved: com.toysystem:homelab-toy-system:pom:0.1.0 (absent): Could not find artifact com.toysystem:homelab-toy-system:pom:0.1.0 in central (https://repo.maven.apache.org/maven2) and 'parent.relativePath' points at wrong local POM @ line 7, column 11 -> [Help 2]
+2.475 [ERROR] 
+2.477 [ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.
+2.477 [ERROR] Re-run Maven using the -X switch to enable full debug logging.
+2.477 [ERROR] 
+2.477 [ERROR] For more information about the errors and possible solutions, please read the following articles:
+2.477 [ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/ProjectBuildingException
+2.478 [ERROR] [Help 2] http://cwiki.apache.org/confluence/display/MAVEN/UnresolvableModelException
+------
+Dockerfile:5
+--------------------
+   3 |     WORKDIR /app
+   4 |     COPY pom.xml .
+   5 | >>> RUN mvn dependency:go-offline -B
+   6 |     COPY src ./src
+   7 |     RUN mvn clean package -DskipTests -B
+--------------------
+ERROR: failed to build: failed to solve: process "/bin/sh -c mvn dependency:go-offline -B" did not complete successfully: exit code: 1
+
+这个报错说明了一个之前没浮出水面的架构差异——notification-service的pom.xml里，<parent>指向的不是Spring Boot官方的父pom，而是你monorepo自己根目录下的一个自定义父pom(com.toysystem:homelab-toy-system:0.1.0)。这个父pom只存在于你本地的monorepo仓库里，从来没有发布到Maven中央仓库，所以Maven当然找不到它——这跟之前gateway-service能顺利build，形成了一个值得先确认的差异点。
+
+先确认一下：这个差异是有意为之，还是四个服务本该一致
+bash
+head -20 gateway-service/pom.xml
+head -20 notification-service/pom.xml
+
+把这两份pom.xml前20行的<parent>部分贴给我对比一下——我猜测的情况是：gateway-service的<parent>直接指向org.springframework.boot:spring-boot-starter-parent(能从Maven中央仓库直接下载，所以之前构建顺利)，而notification-service(可能还有policy/search)指向的是monorepo根目录自己的聚合父pom，这种情况在真实项目里也很常见——用一个仓库自己的父pom统一管理"版本号、公共依赖、公司内部规范"，这个父pom自己再去继承spring-boot-starter-parent，是个合理的架构决定，只是这样一来，构建方式必须跟着调整。
+
+根因：Maven多模块项目的父pom解析，需要在"构建上下文"里能同时看到父pom和子模块
+
+之前我们给Dockerfile用的构建上下文是子模块自己的目录(docker build ... .，在notification-service/目录下执行)——这个范围内只有子模块自己的pom.xml，看不到monorepo根目录那份父pom，Maven解析<parent>时自然找不到。
+
+修复：把构建上下文改成monorepo根目录，调整Dockerfile里的COPY路径
+bash
+cd /home/ziqiao/Documents/homelab-toy-system   # 回到monorepo根目录
+
+Dockerfile需要相应调整(以notification-service为例)：
+
+dockerfile
+# ---------- 构建阶段 ----------
+FROM maven:3.9-eclipse-temurin-21 AS build
+WORKDIR /app
+
+# 先把整个monorepo的pom结构复制进来（父pom + 各子模块自己的pom.xml）
+COPY pom.xml .
+COPY gateway-service/pom.xml gateway-service/pom.xml
+COPY policy-service/pom.xml policy-service/pom.xml
+COPY notification-service/pom.xml notification-service/pom.xml
+COPY search-service/pom.xml search-service/pom.xml
+
+RUN mvn -pl notification-service -am dependency:go-offline -B
+
+COPY notification-service/src ./notification-service/src
+RUN mvn -pl notification-service -am clean package -DskipTests -B
+
+# ---------- 运行阶段 ----------
+FROM eclipse-temurin:21-jre
+WORKDIR /app
+COPY --from=build /app/notification-service/target/*.jar app.jar
+EXPOSE 8082
+ENTRYPOINT ["java", "-jar", "app.jar"]
+
+关键变化解释：
+
+必须把4个子模块的pom.xml全部复制进来，即使这次只build其中一个——因为根目录的父pom里，<modules>标签会列出全部4个子模块，Maven在解析"这是个多模块项目"这一步，会去尝试定位每一个列出的子模块目录，找不到就直接报错，所以哪怕只是想build notification-service，父pom视角下"全家福"必须完整
+-pl notification-service——"project list"，告诉Maven"这次我只想构建这一个模块"
+-am——"also make"，"如果这个模块依赖了同个monorepo里的其他模块，也顺带把那些依赖模块一起构建"（你这几个服务之间应该没有互相依赖，但加上这个参数更保险，不会因为以后加了内部共享模块而突然出问题）
+只复制了各模块的pom.xml，没有复制它们的src——这是故意的，缓存优化的思路跟之前一样：改notification-service的代码，不应该导致gateway/policy/search这几个没变的模块重新触发任何构建动作；-pl+-am配合"只给这一个模块的src"，能保证Maven只针对目标模块编译，不会因为看到其他模块的pom就顺带尝试编译它们的源码(它们没有src，也不需要有)
+Build命令也要跟着改——注意-f参数指定Dockerfile位置
+
+因为现在构建上下文是根目录，但Dockerfile文件还是放在notification-service/子目录下，需要用-f显式指出Dockerfile在哪：
+
+bash
+docker build -f notification-service/Dockerfile \
+  -t localhost:5000/notification-service:$(git rev-parse --short HEAD) \
+  .
+建议先确认那两份pom.xml的<parent>差异
+
+把head -20的对比结果贴给我，确认到底是"4个服务本该统一但目前不一致"，还是"gateway本来就该单独走spring-boot-starter-parent、其他3个走monorepo自己的父pom"这种有意设计——确认清楚后，我们再决定gateway-service要不要也补上这套multi-module构建方式(即使现在能build成功，如果它其实也该继承monorepo父pom、只是目前碰巧没写，那也值得一起改掉，避免4个服务的构建方式不统一带来的维护成本)。
