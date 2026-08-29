@@ -236,3 +236,65 @@ Part 3：你的直觉对不对——k8s下"每个pod一样的image、配置本�
 但我们完全不做在线改规则这种事，配置文件是打进镜像里的静态YAML，每个pod启动时各自读一份、算出来的结果保证一致（因为公式和输入都一样）——这正是我们当初选Standalone + Memory模式的原因：这就是ShardingSphere给"我不需要跨实例同步，每个实例自己算自己的就行"这种场景准备的选项，等于是显式选了"不要分布式一致性这一层，我不需要"。上k3s之后除非你想做"不重新部署镜像、直接在线加分片数"这种高阶操作，否则这个模式不需要换，你的直觉是对的，我们已经站在这个直觉对应的那个选项上了。
 
 一句话总结整个ShardingSphere的"重"：我们只用到它5%的能力（SQL改写+路由），但因为它是个通用框架，骨架上那些为其他95%能力准备的插座（鉴权、多种部署形态、分布式一致性）必须有东西插上去，才能编译通过、启动起来——这不是配置得复杂，是这个工具本身的定位比我们的需求大得多，属于"杀鸡用牛刀，但牛刀有牛刀自己的开机自检流程"。
+
+
+### Q: docker-compose.dev.yml 本地docker拉服务，这里面的路径具体指的哪个机器上的，不是宿主机对不？是docker内部的一个磁盘环境？
+volumes:
+      - registry-data:/var/lib/registry
+
+中文：
+你问得对，registry-data:/var/lib/registry 里冒号左边的 registry-data 不是宿主机的具体路径，而是一个 Docker 命名卷（named volume）。它确实是由 Docker 管理的存储空间，但物理上还是存在宿主机磁盘上，只是路径由 Docker 自己决定，不是你手动指定的目录。
+
+具体来说，在 Linux 宿主机上，Docker 会把这个卷实际存放在：
+
+/var/lib/docker/volumes/<项目名>_registry-data/_data
+
+（<项目名> 通常是 docker-compose 所在文件夹名，除非你用 name: 显式指定过 project name）
+
+冒号右边的 /var/lib/registry 才是容器内部的路径——这是 registry 这个镜像本身认的数据目录。Docker 会把宿主机上那个卷目录"挂载"进容器,容器看到的就是 /var/lib/registry,但实际写的数据落在宿主机的卷目录里。
+
+所以整体逻辑是:
+
+宿主机磁盘上确实有实体文件 ✅
+但路径是 Docker 托管的,不是你指定的自由路径(这点和 bind mount 不一样)
+容器内部访问用的是右边那个路径
+
+如果你想让它落在自己指定的宿主机目录(比如 ~/my-registry-data),就要换成 bind mount 写法:
+
+yaml
+volumes:
+  - ./my-registry-data:/var/lib/registry
+
+这样左边就是明确的宿主机相对/绝对路径了。
+
+日本語(ふりがな付き):
+その理解(りかい)で合(あ)っています。registry-data:/var/lib/registry の左側(ひだりがわ)の registry-data は、ホストマシンの具体的(ぐたいてき)なパスではなく、Dockerの名前付(なまえつ)きボリューム(named volume) です。実際(じっさい)にはホストマシンのディスク上(じょう)に保存(ほぞん)されますが、そのパスはDockerが自動的(じどうてき)に決(き)めるもので、あなたが手動(しゅどう)で指定(してい)したディレクトリではありません。
+
+Linuxホストの場合(ばあい)、Dockerは実際(じっさい)にこのボリュームを以下(いか)の場所(ばしょ)に保存(ほぞん)します:
+
+/var/lib/docker/volumes/<プロジェクト名(めい)>_registry-data/_data
+
+コロンの右側(みぎがわ)の /var/lib/registry は**コンテナ内部(ないぶ)**のパスです。これはregistryイメージ自体(じたい)が認識(にんしき)するデータディレクトリで、Dockerはホスト上(じょう)のそのボリュームディレクトリを、コンテナ内部(ないぶ)にマウント(挂载/かけこ)します。
+
+もしホスト側(がわ)の自分(じぶん)で指定(してい)したディレクトリに保存(ほぞん)したいなら、bind mount方式(ほうしき)に変(か)える必要(ひつよう)があります:
+
+yaml
+volumes:
+  - ./my-registry-data:/var/lib/registry
+
+English:
+Your instinct is correct — registry-data on the left side is not a specific path you chose on the host machine. It's a Docker named volume. It does physically live on the host disk, but the exact path is managed by Docker itself, not something you set directly.
+
+On a Linux host, Docker actually stores it at:
+
+/var/lib/docker/volumes/<project_name>_registry-data/_data
+
+The /var/lib/registry on the right side is the path inside the container — that's the data directory the registry image itself expects. Docker mounts the host-side volume directory into the container at that path, so the container sees /var/lib/registry, but the data is physically written into that Docker-managed volume location on the host.
+
+If you want to control exactly where on the host it lives (e.g. ~/my-registry-data), switch to a bind mount instead:
+
+yaml
+volumes:
+  - ./my-registry-data:/var/lib/registry
+
+Now the left side is an explicit host path.

@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shared-config
+  namespace: toy-system
+data:
+  KAFKA_BOOTSTRAP_SERVERS: "my-kafka-kafka-bootstrap.toy-infra.svc.cluster.local:9092"
+  ELASTICSEARCH_URIS: "https://my-es-es-http.toy-infra.svc.cluster.local:9200"
+  SPRING_REDIS_HOST: "redis.toy-infra.svc.cluster.local"
+  SPRING_REDIS_PORT: "6379"
+  SPRING_DATASOURCE_URL: "jdbc:mysql://mysql.toy-infra.svc.cluster.local:3306/toy_policy_db?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC"

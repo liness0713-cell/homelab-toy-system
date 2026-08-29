@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-config
+  namespace: toy-system
+data:
+  POLICY_SERVICE_URI: "http://policy-service.toy-infra.svc.cluster.local:8081"
+  SEARCH_SERVICE_URI: "http://search-service.toy-infra.svc.cluster.local:8083"
+  CORS_ALLOWED_ORIGIN_1: "https://app.homelab.local"
