@@ -988,6 +988,7 @@ WORKDIR /app
 COPY --from=build /app/notification-service/target/*.jar app.jar
 EXPOSE 8082
 ENTRYPOINT ["java", "-jar", "app.jar"]
+
 这份模板套用到policy-service、search-service，只需换模块名
 
 policy-service：把所有notification-service换成policy-service，EXPOSE改8081
@@ -1019,3 +1020,50 @@ docker build -f notification-service/Dockerfile \
 docker push localhost:5000/notification-service:$TAG
 
 先跑notification-service这次，确认event-contracts的编译链路顺利通过，再照搬去处理policy-service和search-service。
+
+
+
+
+如何删除dockr和registry:2里的镜像，我想重推
+
+中文：
+
+分两部分：本地Docker的镜像，和registry里已经推送上去的镜像，删除方式完全不同。
+
+一、删除本地Docker的镜像(简单，标准命令)
+bash
+# 先看现有镜像列表，确认要删哪个
+docker images | grep notification-service
+
+# 按镜像ID或者"仓库名:tag"删
+docker rmi localhost:5000/notification-service:<有问题的tag>
+
+# 如果同一个仓库名下有很多失败的tag懒得一个个删，可以一次性清理所有"没有tag名字"的悬空镜像
+docker image prune -f
+二、删除registry:2里已经推送上去的镜像——这里有个反直觉的地方，需要先说清楚
+
+registry:2默认配置下，删除操作删的只是"元数据的引用"，磁盘上的实际文件不会被自动清理，需要额外跑一次"垃圾回收"才能真正腾出空间。分几步：
+
+Step1：确认要删的tag对应的digest
+bash
+# 先查这个仓库下有哪些tag
+curl http://localhost:5000/v2/notification-service/tags/list
+
+# 拿到某个tag对应的digest(manifest的哈希)——这一步必须带上特定的Accept header
+curl -I -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+  http://localhost:5000/v2/notification-service/manifests/<有问题的tag>
+
+第二条命令的返回头里会有一行Docker-Content-Digest: sha256:xxxxx...，这个才是删除时真正要用的标识符(不是tag名字本身)。
+
+Step2：用这个digest发DELETE请求
+bash
+curl -X DELETE http://localhost:5000/v2/notification-service/manifests/sha256:xxxxx...
+Step3：进容器内部，真正触发垃圾回收，腾出磁盘空间
+bash
+docker exec local-registry bin/registry garbage-collect /etc/docker/registry/config.yml
+
+这一步不能省——Step2的DELETE只是把"这个tag指向这份内容"这条记录抹掉了，实际存储的镜像层文件，只有跑了这个垃圾回收命令，才会真正从磁盘上被清除。
+
+更实际的建议：既然你是想"重推"，不一定非要删
+
+回顾一下我们之前聊的层缓存机制——如果你只是想"用一个新版本覆盖测试中的失败尝试"，其实不需要先删再推，直接换个新tag(比如重新生成一次$TAG，时间戳自然就不一样了)docker build+push上去就行，旧的失败tag留着也不影响任何东西，之后想清理再按上面的步骤批量处理即可。如果只是本地docker images列表看着乱，想先清爽一下再重新推，那就走上面"一、删除本地镜像"这部分，跟registry本身完全无关——本地删了不影响registry里已经推送成功的内容，这是两个完全独立的存储空间，删一边不会影响另一边。
