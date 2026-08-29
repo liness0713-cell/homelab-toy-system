@@ -1,4 +1,6 @@
+## 打镜像前，先执行这个算tag
 TAG=$(date +%Y%m%d%H%M)-$(git rev-parse --short HEAD)
+echo $TAG
 
 ## 打包推送 frontend
 cd /home/ziqiao/Documents/homelab-toy-system/frontend
