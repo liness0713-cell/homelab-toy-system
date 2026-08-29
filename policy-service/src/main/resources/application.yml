@@ -1,5 +1,6 @@
 server:
   port: ${SERVER_PORT:8081}
+  shutdown: graceful
 
 spring:
   application:
@@ -37,6 +38,9 @@ spring:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
       acks: all
+
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
 
 mybatis:
   mapper-locations: classpath:mapper/*.xml

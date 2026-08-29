@@ -1,5 +1,6 @@
 server:
   port: ${SERVER_PORT:8082}
+  shutdown: graceful
 
 spring:
   application:
@@ -24,6 +25,9 @@ spring:
       # 转发到 <topic>.DLT，不能让它一直堵在原topic的这个offset上（见 KafkaErrorHandlingConfig）。
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
 
 management:
   endpoints:

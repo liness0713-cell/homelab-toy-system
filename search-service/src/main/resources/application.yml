@@ -1,5 +1,6 @@
 server:
   port: ${SERVER_PORT:8083}
+  shutdown: graceful
 
 spring:
   application:
@@ -22,6 +23,9 @@ spring:
       # 供 DeadLetterPublishingRecoverer 用（见 KafkaErrorHandlingConfig）
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
 
 management:
   endpoints:

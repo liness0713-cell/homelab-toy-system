@@ -954,3 +954,68 @@ docker build -f notification-service/Dockerfile \
 建议先确认那两份pom.xml的<parent>差异
 
 把head -20的对比结果贴给我，确认到底是"4个服务本该统一但目前不一致"，还是"gateway本来就该单独走spring-boot-starter-parent、其他3个走monorepo自己的父pom"这种有意设计——确认清楚后，我们再决定gateway-service要不要也补上这套multi-module构建方式(即使现在能build成功，如果它其实也该继承monorepo父pom、只是目前碰巧没写，那也值得一起改掉，避免4个服务的构建方式不统一带来的维护成本)。
+
+
+这下更清楚了——event-contracts不是"顺手加的保险参数"，而是真实存在的共享依赖，-am这个参数从"以防万一"变成了"必需项"。gateway-service确认是有意独立在父pom体系之外的，不用改，之前的Dockerfile保留即可。
+
+更新notification-service的Dockerfile，把event-contracts也纳入构建链路
+dockerfile
+# ---------- 构建阶段 ----------
+FROM maven:3.9-eclipse-temurin-21 AS build
+WORKDIR /app
+
+# 先复制根pom + 4个子模块各自的pom.xml(父pom解析多模块结构时，这4个都得能找到)
+COPY pom.xml .
+COPY event-contracts/pom.xml event-contracts/pom.xml
+COPY policy-service/pom.xml policy-service/pom.xml
+COPY notification-service/pom.xml notification-service/pom.xml
+COPY search-service/pom.xml search-service/pom.xml
+
+# -am(also make)现在是真正需要的：notification-service依赖event-contracts，
+# 必须先把event-contracts的依赖也下载好
+RUN mvn -pl notification-service -am dependency:go-offline -B
+
+# event-contracts是被依赖的一方，它的源码也要复制进来才能被编译成jar
+COPY event-contracts/src ./event-contracts/src
+COPY notification-service/src ./notification-service/src
+
+# -am会先编译event-contracts、安装到本地.m2仓库，再编译notification-service
+RUN mvn -pl notification-service -am clean package -DskipTests -B
+
+# ---------- 运行阶段 ----------
+FROM eclipse-temurin:21-jre
+WORKDIR /app
+COPY --from=build /app/notification-service/target/*.jar app.jar
+EXPOSE 8082
+ENTRYPOINT ["java", "-jar", "app.jar"]
+这份模板套用到policy-service、search-service，只需换模块名
+
+policy-service：把所有notification-service换成policy-service，EXPOSE改8081
+search-service：同理换成search-service，EXPOSE改8083
+
+Build命令(仍在monorepo根目录执行，-f指定各自的Dockerfile)
+bash
+cd /home/ziqiao/Documents/homelab-toy-system
+
+docker build -f notification-service/Dockerfile \
+  -t localhost:5000/notification-service:$(date +%Y%m%d%H%M)-$(git rev-parse --short HEAD) \
+  .
+关于tag加时间戳——格式建议时间戳在前
+bash
+TAG=$(date +%Y%m%d%H%M)-$(git rev-parse --short HEAD)
+echo $TAG   # 类似 202608251430-aa018de
+
+建议时间戳放在commit hash前面，不是后面，原因是这样一来tag的字符串排序天然等于时间先后排序——以后跑docker images或者查registry的tag列表时，同一个服务的多个历史版本会自动按时间顺序排好，一眼能看出哪个最新；如果hash在前，排序会显得杂乱无章，看不出时间线索。
+
+用变量存好TAG再传给build和push两条命令，避免date命令在两条命令里执行的时间不同、生成出两个不一样的时间戳(虽然概率很低，但严谨一点)：
+
+bash
+TAG=$(date +%Y%m%d%H%M)-$(git rev-parse --short HEAD)
+
+docker build -f notification-service/Dockerfile \
+  -t localhost:5000/notification-service:$TAG \
+  .
+
+docker push localhost:5000/notification-service:$TAG
+
+先跑notification-service这次，确认event-contracts的编译链路顺利通过，再照搬去处理policy-service和search-service。
