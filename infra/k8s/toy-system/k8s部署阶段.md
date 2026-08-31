@@ -97,7 +97,8 @@ ENTRYPOINT还是exec形式(还记得我们讲的信号传递问题吗)，只是�
 bash
 mkdir -p /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-infra/config
 cd /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-infra/config
-共享ConfigMap：中间件地址这类公共值
+
+# 共享ConfigMap：中间件地址这类公共值
 bash
 cat <<'EOF' > shared-configmap.yaml
 apiVersion: v1
@@ -114,7 +115,8 @@ data:
 EOF
 
 kubectl apply -f shared-configmap.yaml
-各服务自己的ConfigMap
+
+# 各服务自己的ConfigMap
 bash
 cat <<'EOF' > gateway-configmap.yaml
 apiVersion: v1
@@ -146,19 +148,25 @@ kubectl apply -f policy-configmap.yaml
 Secret：敏感凭证
 bash
 kubectl create secret generic mysql-credentials \
-  -n toy-infra \
+  -n toy-system \
   --from-literal=SPRING_DATASOURCE_USERNAME=toy_app \
   --from-literal=SPRING_DATASOURCE_PASSWORD=toy_app_pw
 
 kubectl create secret generic jwt-secret \
-  -n toy-infra \
+  -n toy-system \
   --from-literal=JWT_SECRET=toy-system-dev-secret-key-please-change-me-in-prod-0001
 
 # ES的elastic账号密码，取的是我们之前从ECK自动生成的secret里读出来的那串
 kubectl create secret generic es-credentials \
-  -n toy-infra \
+  -n toy-system \
   --from-literal=ELASTICSEARCH_USERNAME=elastic \
-  --from-literal=ELASTICSEARCH_PASSWORD=<之前取到的那串密码>
+  --from-literal=ELASTICSEARCH_PASSWORD=pkPFLiFqJNTqZ5JiROHU7nhL
+
+取ES的登录密码
+bash
+kubectl get secret my-es-es-elastic-user -n toy-infra -o jsonpath='{.data.elastic}' | base64 -d
+echo
+pkPFLiFqJNTqZ5JiROHU7nhL
 
 （用kubectl create secret generic --from-literal这种命令行方式，而不是写yaml文件，是因为敏感内容不适合明文存进你的git仓库——这几条命令本身也不建议存进代码仓库的脚本里，跑一次记住效果就行；如果你想要yaml形式管理，需要手动base64编码塞进data字段，或者引入外部密钥管理工具，这个可以后面有需要再聊）
 
@@ -258,3 +266,47 @@ English:
 Secrets are Base64-encoded, not encrypted — anyone can decode them back to plaintext with kubectl get secret ... | base64 -d. It doesn't provide real security on its own.
 
 For the ES certificate secrets, the internal vs public distinction comes down to whether the private key is included. The internal versions contain the private key (which only the server itself, or the Operator issuing certs, should ever hold), while public contains only the CA certificate and HTTP certificate — no private key at all. An external client like search-service only needs the ability to verify "was this certificate issued by a CA I trust" — it has no legitimate need for (and shouldn't have) the power to impersonate the server, which is exactly what the private key would grant. Using public is the correct application of least-privilege here.
+
+
+kubectl get secret mysql-credentials -n toy-system -o jsonpath='{.data.SPRING_DATASOURCE_PASSWORD}' | base64 -d
+拆解讲一下这个命令
+
+拆开逐段讲。
+
+kubectl get secret mysql-credentials -n toy-system
+
+标准的资源查询命令——"去toy-system这个namespace里，把名叫mysql-credentials的这个Secret资源的内容取出来"。单独跑这一条，默认输出是个表格摘要(名字、类型、有几个key、创建了多久)，看不到具体的value内容。
+
+-o jsonpath='{.data.SPRING_DATASOURCE_PASSWORD}'
+
+-o是"output format"(输出格式)，kubectl默认给你看的是人类友好的表格，但背后任何一个K8s资源，本质上都是一份完整的JSON/YAML结构数据——-o jsonpath=...就是告诉kubectl："别给我表格了，我要从这份完整数据里，精确挖出某一个字段的值"。
+
+jsonpath是一种类似"用路径指路"的查询语法，{.data.SPRING_DATASOURCE_PASSWORD}翻译成人话就是："从这份JSON的最外层，找到data这个字段，再从data里面，找到SPRING_DATASOURCE_PASSWORD这个key，把它的值原样吐出来"。
+
+如果你不加-o jsonpath，直接跑kubectl get secret mysql-credentials -n toy-system -o yaml，会看到类似这样的完整结构：
+
+yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysql-credentials
+  namespace: toy-system
+data:
+  SPRING_DATASOURCE_USERNAME: dG95X2FwcA==
+  SPRING_DATASOURCE_PASSWORD: dG95X2FwcF9wdw==
+
+jsonpath那条命令，就是从这整份结构里，精确定位到data.SPRING_DATASOURCE_PASSWORD这一行，只把dG95X2FwcF9wdw==这一串东西打印出来，跳过前面所有你不需要看的部分——这比自己盯着一大坨yaml输出、肉眼去找那一行方便得多，尤其是写脚本自动化处理时更是必须这么做(不可能让脚本去"肉眼"解析yaml排版)。
+
+中间的 | (管道符)——之前你已经问过这个概念
+
+把前一条命令的输出(也就是刚才那个dG95X2FwcF9wdw==)，作为输入喂给下一条命令。
+
+base64 -d
+
+-d是"decode"(解码)的意思——把接收到的这串dG95X2FwcF9wdw==，按Base64规则反向还原成它编码前的原始内容，也就是toy_app_pw这个明文密码。
+
+整体串起来
+
+"从toy-system这个namespace里，找到mysql-credentials这个Secret，精确挖出data字段下SPRING_DATASOURCE_PASSWORD这个key对应的Base64字符串，把这串字符串还原成明文密码，打印出来。"
+
+这也正好印证了我们之前讲的——这整个过程完全不需要任何"密钥"或"授权口令"，唯一的门槛是"你有没有权限执行kubectl get secret这个操作本身"(由K8s的RBAC权限系统控制)，一旦有这个查询权限，剩下的jsonpath+base64 -d就是纯粹的格式转换，谁都能做，没有额外的加密屏障。
