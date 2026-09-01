@@ -1,0 +1,12 @@
+# cat <<'EOF' | sudo tee /etc/rancher/k3s/registries.yaml
+mirrors:
+  "localhost:5000":
+    endpoint:
+      - "http://192.168.40.23:5000"
+configs:
+  "localhost:5000":
+    tls:
+      insecure_skip_verify: true
+# EOF
+
+# sudo systemctl restart k3s
