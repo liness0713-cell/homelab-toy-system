@@ -44,3 +44,7 @@ docker build -f search-service/Dockerfile \
   .
 
 docker push localhost:5000/search-service:$TAG
+
+### 看推送有没有成功
+curl http://localhost:5000/v2/_catalog
+curl http://localhost:5000/v2/search-service/tags/list
