@@ -534,3 +534,384 @@ kubectl get pods -n toy-system
 kubectl logs -f deployment/notification-service -n toy-system
 
 把结果贴给我，确认notification-service顺利跑起来(能正常连上Kafka)后，我们再写ClusterIP Service(内部服务不需要Ingress)，然后进入policy-service。
+
+
+k8s有哪几种探针？
+
+除了刚才讲的readinessProbe和livenessProbe，K8s其实一共有三种探针，还有一种叫startupProbe，专门解决前两种探针在"启动缓慢的应用"上会遇到的一个实际矛盾，值得一起讲清楚。
+
+三种探针分工
+探针	回答的问题	失败后K8s的动作
+startupProbe(启动探针)	"这个应用启动过程完成了吗？"	只要探测持续失败，K8s会一直耐心等待，暂缓执行readiness/liveness探测，直到startupProbe成功一次为止；如果一直失败到超过设定的重试上限，才会重启容器
+readinessProbe(就绪探针)	"现在这一刻，这个Pod能不能正常处理请求？"	探测失败：从Service负载均衡列表里暂时摘除，不重启，等恢复了再加回去
+livenessProbe(存活探针)	"这个进程是不是已经僵死、卡住动不了了？"	探测失败：直接杀掉重启这个容器
+为什么需要专门加一个startupProbe——它解决的具体矛盾
+
+假设一个应用正常启动要花90秒(比如要连接好几个数据库、预热缓存)，如果只配了livenessProbe(比如initialDelaySeconds: 30)，会发生这种尴尬情况：应用其实还在正常启动过程中(第35秒，还没启动完)，但livenessProbe已经开始探测了，探测失败，K8s误判"这个容器僵死了"，把它杀掉重启——重启后又要重新走一遍90秒的启动流程，如果每次都被这个"没耐心"的livenessProbe打断，这个Pod可能永远都启动不起来，陷入死循环。
+
+startupProbe的解法是：先让startupProbe用"很宽松的耐心"去等应用启动完成，在这期间livenessProbe和readinessProbe完全不会被触发探测，只有startupProbe第一次成功之后，才会切换到正常的readiness/liveness两套逻辑接管——这样就不会出现"应用还在正常启动、却被当成僵死进程误杀"的情况。
+
+三者的典型时间线，串起来看
+容器启动
+   │
+   ▼
+startupProbe开始探测(比如每10秒探一次，最多容忍30次失败=300秒)
+   │  ← 这期间readiness/liveness完全不生效，K8s只是安静等着
+   ▼
+startupProbe第一次探测成功 → 应用被判定"已经启动完毕"
+   │
+   ▼
+从此切换到readinessProbe + livenessProbe正常接管(通常各自的探测间隔更短、更敏感)
+对我们这4个Java服务来说，需不需要加startupProbe
+
+Spring Boot应用的启动时间通常在几秒到十几秒之间(不像有些Java应用有复杂的预热逻辑要跑几分钟)，我们之前给notification-service设的initialDelaySeconds: 15(readiness)和30(liveness)，这个宽限期本身已经足够覆盖正常启动耗时，目前这个规模不加startupProbe也没问题。但如果以后你发现某个服务启动特别慢(比如加载了很重的缓存/模型)，或者发现Pod总是"刚启动就被重启、陷入循环"，startupProbe就是专门为这种场景设计的解药，到时候可以加上，现在先保持简单。
+
+
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/infra/k8s/toy-system/notification-service$ kubectl get pods -n toy-system
+NAME                                   READY   STATUS    RESTARTS   AGE
+notification-service-5b6759fdb-nhmfh   0/1     Running   0          17s
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/infra/k8s/toy-system/notification-service$ kubectl logs -f deployment/notification-service -n toy-system
+
+  .   ____          _            __ _ _
+ /\\ / ___'_ __ _ _(_)_ __  __ _ \ \ \ \
+( ( )\___ | '_ | '_| | '_ \/ _` | \ \ \ \
+ \\/  ___)| |_)| | | | | || (_| |  ) ) ) )
+  '  |____| .__|_| |_|_| |_\__, | / / / /
+ =========|_|==============|___/=/_/_/_/
+
+ :: Spring Boot ::                (v3.3.5)
+
+2026-09-02T21:42:46.721Z  INFO 1 --- [notification-service] [           main] c.t.n.NotificationServiceApplication     : Starting NotificationServiceApplication v0.1.0 using Java 21.0.12 with PID 1 (/app/app.jar started by root in /app)
+2026-09-02T21:42:46.726Z DEBUG 1 --- [notification-service] [           main] c.t.n.NotificationServiceApplication     : Running with Spring Boot v3.3.5, Spring v6.1.14
+2026-09-02T21:42:46.727Z  INFO 1 --- [notification-service] [           main] c.t.n.NotificationServiceApplication     : No active profile set, falling back to 1 default profile: "default"
+2026-09-02T21:42:48.121Z  INFO 1 --- [notification-service] [           main] o.s.b.w.embedded.tomcat.TomcatWebServer  : Tomcat initialized with port 8082 (http)
+2026-09-02T21:42:48.136Z  INFO 1 --- [notification-service] [           main] o.apache.catalina.core.StandardService   : Starting service [Tomcat]
+2026-09-02T21:42:48.136Z  INFO 1 --- [notification-service] [           main] o.apache.catalina.core.StandardEngine    : Starting Servlet engine: [Apache Tomcat/10.1.31]
+2026-09-02T21:42:48.185Z  INFO 1 --- [notification-service] [           main] o.a.c.c.C.[Tomcat].[localhost].[/]       : Initializing Spring embedded WebApplicationContext
+2026-09-02T21:42:48.186Z  INFO 1 --- [notification-service] [           main] w.s.c.ServletWebServerApplicationContext : Root WebApplicationContext: initialization completed in 1380 ms
+2026-09-02T21:42:48.952Z  INFO 1 --- [notification-service] [           main] o.s.b.a.e.web.EndpointLinksResolver      : Exposing 2 endpoints beneath base path '/actuator'
+2026-09-02T21:42:49.049Z  INFO 1 --- [notification-service] [           main] o.a.k.clients.admin.AdminClientConfig    : AdminClientConfig values: 
+        auto.include.jmx.reporter = true
+        bootstrap.controllers = []
+        bootstrap.servers = [my-kafka-kafka-bootstrap.toy-infra.svc.cluster.local:9092]
+        client.dns.lookup = use_all_dns_ips
+        client.id = notification-service-admin-0
+        connections.max.idle.ms = 300000
+        default.api.timeout.ms = 60000
+        enable.metrics.push = true
+        metadata.max.age.ms = 300000
+        metric.reporters = []
+        metrics.num.samples = 2
+        metrics.recording.level = INFO
+        metrics.sample.window.ms = 30000
+        receive.buffer.bytes = 65536
+        reconnect.backoff.max.ms = 1000
+        reconnect.backoff.ms = 50
+        request.timeout.ms = 30000
+        retries = 2147483647
+        retry.backoff.max.ms = 1000
+        retry.backoff.ms = 100
+        sasl.client.callback.handler.class = null
+        sasl.jaas.config = null
+        sasl.kerberos.kinit.cmd = /usr/bin/kinit
+        sasl.kerberos.min.time.before.relogin = 60000
+        sasl.kerberos.service.name = null
+        sasl.kerberos.ticket.renew.jitter = 0.05
+        sasl.kerberos.ticket.renew.window.factor = 0.8
+        sasl.login.callback.handler.class = null
+        sasl.login.class = null
+        sasl.login.connect.timeout.ms = null
+        sasl.login.read.timeout.ms = null
+        sasl.login.refresh.buffer.seconds = 300
+        sasl.login.refresh.min.period.seconds = 60
+        sasl.login.refresh.window.factor = 0.8
+        sasl.login.refresh.window.jitter = 0.05
+        sasl.login.retry.backoff.max.ms = 10000
+        sasl.login.retry.backoff.ms = 100
+        sasl.mechanism = GSSAPI
+        sasl.oauthbearer.clock.skew.seconds = 30
+        sasl.oauthbearer.expected.audience = null
+        sasl.oauthbearer.expected.issuer = null
+        sasl.oauthbearer.jwks.endpoint.refresh.ms = 3600000
+        sasl.oauthbearer.jwks.endpoint.retry.backoff.max.ms = 10000
+        sasl.oauthbearer.jwks.endpoint.retry.backoff.ms = 100
+        sasl.oauthbearer.jwks.endpoint.url = null
+        sasl.oauthbearer.scope.claim.name = scope
+        sasl.oauthbearer.sub.claim.name = sub
+        sasl.oauthbearer.token.endpoint.url = null
+        security.protocol = PLAINTEXT
+        security.providers = null
+        send.buffer.bytes = 131072
+        socket.connection.setup.timeout.max.ms = 30000
+        socket.connection.setup.timeout.ms = 10000
+        ssl.cipher.suites = null
+        ssl.enabled.protocols = [TLSv1.2, TLSv1.3]
+        ssl.endpoint.identification.algorithm = https
+        ssl.engine.factory.class = null
+        ssl.key.password = null
+        ssl.keymanager.algorithm = SunX509
+        ssl.keystore.certificate.chain = null
+        ssl.keystore.key = null
+        ssl.keystore.location = null
+        ssl.keystore.password = null
+        ssl.keystore.type = JKS
+        ssl.protocol = TLSv1.3
+        ssl.provider = null
+        ssl.secure.random.implementation = null
+        ssl.trustmanager.algorithm = PKIX
+        ssl.truststore.certificates = null
+        ssl.truststore.location = null
+        ssl.truststore.password = null
+        ssl.truststore.type = JKS
+
+2026-09-02T21:42:49.260Z  INFO 1 --- [notification-service] [           main] o.a.kafka.common.utils.AppInfoParser     : Kafka version: 3.7.1
+2026-09-02T21:42:49.261Z  INFO 1 --- [notification-service] [           main] o.a.kafka.common.utils.AppInfoParser     : Kafka commitId: e2494e6ffb89f828
+2026-09-02T21:42:49.261Z  INFO 1 --- [notification-service] [           main] o.a.kafka.common.utils.AppInfoParser     : Kafka startTimeMs: 1788385369258
+2026-09-02T21:42:49.774Z  INFO 1 --- [notification-service] [service-admin-0] o.a.kafka.common.utils.AppInfoParser     : App info kafka.admin.client for notification-service-admin-0 unregistered
+2026-09-02T21:42:49.780Z  INFO 1 --- [notification-service] [service-admin-0] o.apache.kafka.common.metrics.Metrics    : Metrics scheduler closed
+2026-09-02T21:42:49.780Z  INFO 1 --- [notification-service] [service-admin-0] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.metrics.JmxReporter
+2026-09-02T21:42:49.781Z  INFO 1 --- [notification-service] [service-admin-0] o.apache.kafka.common.metrics.Metrics    : Metrics reporters closed
+2026-09-02T21:42:49.823Z  INFO 1 --- [notification-service] [           main] o.s.b.w.embedded.tomcat.TomcatWebServer  : Tomcat started on port 8082 (http) with context path '/'
+2026-09-02T21:42:49.872Z  INFO 1 --- [notification-service] [           main] o.a.k.clients.consumer.ConsumerConfig    : ConsumerConfig values: 
+        allow.auto.create.topics = true
+        auto.commit.interval.ms = 5000
+        auto.include.jmx.reporter = true
+        auto.offset.reset = earliest
+        bootstrap.servers = [my-kafka-kafka-bootstrap.toy-infra.svc.cluster.local:9092]
+        check.crcs = true
+        client.dns.lookup = use_all_dns_ips
+        client.id = consumer-notification-service-1
+        client.rack = 
+        connections.max.idle.ms = 540000
+        default.api.timeout.ms = 60000
+        enable.auto.commit = false
+        enable.metrics.push = true
+        exclude.internal.topics = true
+        fetch.max.bytes = 52428800
+        fetch.max.wait.ms = 500
+        fetch.min.bytes = 1
+        group.id = notification-service
+        group.instance.id = null
+        group.protocol = classic
+        group.remote.assignor = null
+        heartbeat.interval.ms = 3000
+        interceptor.classes = []
+        internal.leave.group.on.close = true
+        internal.throw.on.fetch.stable.offset.unsupported = false
+        isolation.level = read_uncommitted
+        key.deserializer = class org.apache.kafka.common.serialization.StringDeserializer
+        max.partition.fetch.bytes = 1048576
+        max.poll.interval.ms = 300000
+        max.poll.records = 500
+        metadata.max.age.ms = 300000
+        metric.reporters = []
+        metrics.num.samples = 2
+        metrics.recording.level = INFO
+        metrics.sample.window.ms = 30000
+        partition.assignment.strategy = [class org.apache.kafka.clients.consumer.RangeAssignor, class org.apache.kafka.clients.consumer.CooperativeStickyAssignor]
+        receive.buffer.bytes = 65536
+        reconnect.backoff.max.ms = 1000
+        reconnect.backoff.ms = 50
+        request.timeout.ms = 30000
+        retry.backoff.max.ms = 1000
+        retry.backoff.ms = 100
+        sasl.client.callback.handler.class = null
+        sasl.jaas.config = null
+        sasl.kerberos.kinit.cmd = /usr/bin/kinit
+        sasl.kerberos.min.time.before.relogin = 60000
+        sasl.kerberos.service.name = null
+        sasl.kerberos.ticket.renew.jitter = 0.05
+        sasl.kerberos.ticket.renew.window.factor = 0.8
+        sasl.login.callback.handler.class = null
+        sasl.login.class = null
+        sasl.login.connect.timeout.ms = null
+        sasl.login.read.timeout.ms = null
+        sasl.login.refresh.buffer.seconds = 300
+        sasl.login.refresh.min.period.seconds = 60
+        sasl.login.refresh.window.factor = 0.8
+        sasl.login.refresh.window.jitter = 0.05
+        sasl.login.retry.backoff.max.ms = 10000
+        sasl.login.retry.backoff.ms = 100
+        sasl.mechanism = GSSAPI
+        sasl.oauthbearer.clock.skew.seconds = 30
+        sasl.oauthbearer.expected.audience = null
+        sasl.oauthbearer.expected.issuer = null
+        sasl.oauthbearer.jwks.endpoint.refresh.ms = 3600000
+        sasl.oauthbearer.jwks.endpoint.retry.backoff.max.ms = 10000
+        sasl.oauthbearer.jwks.endpoint.retry.backoff.ms = 100
+        sasl.oauthbearer.jwks.endpoint.url = null
+        sasl.oauthbearer.scope.claim.name = scope
+        sasl.oauthbearer.sub.claim.name = sub
+        sasl.oauthbearer.token.endpoint.url = null
+        security.protocol = PLAINTEXT
+        security.providers = null
+        send.buffer.bytes = 131072
+        session.timeout.ms = 45000
+        socket.connection.setup.timeout.max.ms = 30000
+        socket.connection.setup.timeout.ms = 10000
+        ssl.cipher.suites = null
+        ssl.enabled.protocols = [TLSv1.2, TLSv1.3]
+        ssl.endpoint.identification.algorithm = https
+        ssl.engine.factory.class = null
+        ssl.key.password = null
+        ssl.keymanager.algorithm = SunX509
+        ssl.keystore.certificate.chain = null
+        ssl.keystore.key = null
+        ssl.keystore.location = null
+        ssl.keystore.password = null
+        ssl.keystore.type = JKS
+        ssl.protocol = TLSv1.3
+        ssl.provider = null
+        ssl.secure.random.implementation = null
+        ssl.trustmanager.algorithm = PKIX
+        ssl.truststore.certificates = null
+        ssl.truststore.location = null
+        ssl.truststore.password = null
+        ssl.truststore.type = JKS
+        value.deserializer = class org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+
+2026-09-02T21:42:49.911Z  INFO 1 --- [notification-service] [           main] o.a.k.c.t.i.KafkaMetricsCollector        : initializing Kafka metrics collector
+2026-09-02T21:42:49.964Z  INFO 1 --- [notification-service] [           main] o.a.kafka.common.utils.AppInfoParser     : Kafka version: 3.7.1
+2026-09-02T21:42:49.964Z  INFO 1 --- [notification-service] [           main] o.a.kafka.common.utils.AppInfoParser     : Kafka commitId: e2494e6ffb89f828
+2026-09-02T21:42:49.964Z  INFO 1 --- [notification-service] [           main] o.a.kafka.common.utils.AppInfoParser     : Kafka startTimeMs: 1788385369964
+2026-09-02T21:42:49.978Z  INFO 1 --- [notification-service] [           main] o.a.k.c.c.internals.LegacyKafkaConsumer  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Subscribed to topic(s): policy-events
+2026-09-02T21:42:50.005Z  INFO 1 --- [notification-service] [           main] c.t.n.NotificationServiceApplication     : Started NotificationServiceApplication in 3.85 seconds (process running for 4.442)
+2026-09-02T21:42:50.009Z  WARN 1 --- [notification-service] [ntainer#0-0-C-1] org.apache.kafka.clients.NetworkClient   : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Error while fetching metadata with correlation id 2 : {policy-events=UNKNOWN_TOPIC_OR_PARTITION}
+2026-09-02T21:42:50.010Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] org.apache.kafka.clients.Metadata        : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Cluster ID: RVsvRSyNQ5WTguJvgWWDgQ
+2026-09-02T21:42:50.138Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Discovered group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.141Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] (Re-)joining group
+2026-09-02T21:42:50.166Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null) is unavailable or invalid due to cause: error response NOT_COORDINATOR. isDisconnected: false. Rediscovery will be attempted.
+2026-09-02T21:42:50.167Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Requesting disconnect from last known coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.167Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] JoinGroup failed: This is not the correct coordinator. Marking coordinator unknown. Sent generation was Generation{generationId=-1, memberId='', protocol='null'}
+2026-09-02T21:42:50.167Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] org.apache.kafka.clients.NetworkClient   : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Client requested disconnect from node 2147483647
+2026-09-02T21:42:50.172Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Discovered group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.173Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null) is unavailable or invalid due to cause: coordinator unavailable. isDisconnected: false. Rediscovery will be attempted.
+2026-09-02T21:42:50.173Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Requesting disconnect from last known coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.291Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Discovered group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.292Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Request joining group due to: rebalance failed due to 'This is not the correct coordinator.' (NotCoordinatorException)
+2026-09-02T21:42:50.293Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] (Re-)joining group
+2026-09-02T21:42:50.295Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null) is unavailable or invalid due to cause: error response NOT_COORDINATOR. isDisconnected: false. Rediscovery will be attempted.
+2026-09-02T21:42:50.295Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Requesting disconnect from last known coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.296Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] JoinGroup failed: This is not the correct coordinator. Marking coordinator unknown. Sent generation was Generation{generationId=-1, memberId='', protocol='null'}
+2026-09-02T21:42:50.296Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] org.apache.kafka.clients.NetworkClient   : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Client requested disconnect from node 2147483647
+2026-09-02T21:42:50.299Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Discovered group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.299Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null) is unavailable or invalid due to cause: coordinator unavailable. isDisconnected: false. Rediscovery will be attempted.
+2026-09-02T21:42:50.299Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Requesting disconnect from last known coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.420Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Discovered group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.421Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Request joining group due to: rebalance failed due to 'This is not the correct coordinator.' (NotCoordinatorException)
+2026-09-02T21:42:50.421Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] (Re-)joining group
+2026-09-02T21:42:50.424Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null) is unavailable or invalid due to cause: error response NOT_COORDINATOR. isDisconnected: false. Rediscovery will be attempted.
+2026-09-02T21:42:50.424Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Requesting disconnect from last known coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.424Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] JoinGroup failed: This is not the correct coordinator. Marking coordinator unknown. Sent generation was Generation{generationId=-1, memberId='', protocol='null'}
+2026-09-02T21:42:50.424Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] org.apache.kafka.clients.NetworkClient   : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Client requested disconnect from node 2147483647
+2026-09-02T21:42:50.427Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Discovered group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.428Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null) is unavailable or invalid due to cause: coordinator unavailable. isDisconnected: false. Rediscovery will be attempted.
+2026-09-02T21:42:50.428Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Requesting disconnect from last known coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.533Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Discovered group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.534Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Request joining group due to: rebalance failed due to 'This is not the correct coordinator.' (NotCoordinatorException)
+2026-09-02T21:42:50.535Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] (Re-)joining group
+2026-09-02T21:42:50.537Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null) is unavailable or invalid due to cause: error response NOT_COORDINATOR. isDisconnected: false. Rediscovery will be attempted.
+2026-09-02T21:42:50.537Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Requesting disconnect from last known coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.537Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] JoinGroup failed: This is not the correct coordinator. Marking coordinator unknown. Sent generation was Generation{generationId=-1, memberId='', protocol='null'}
+2026-09-02T21:42:50.538Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] org.apache.kafka.clients.NetworkClient   : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Client requested disconnect from node 2147483647
+2026-09-02T21:42:50.540Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Discovered group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.540Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null) is unavailable or invalid due to cause: coordinator unavailable. isDisconnected: false. Rediscovery will be attempted.
+2026-09-02T21:42:50.540Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Requesting disconnect from last known coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.660Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Discovered group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.661Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Request joining group due to: rebalance failed due to 'This is not the correct coordinator.' (NotCoordinatorException)
+2026-09-02T21:42:50.662Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] (Re-)joining group
+2026-09-02T21:42:50.667Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null) is unavailable or invalid due to cause: error response NOT_COORDINATOR. isDisconnected: false. Rediscovery will be attempted.
+2026-09-02T21:42:50.667Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Requesting disconnect from last known coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.667Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] JoinGroup failed: This is not the correct coordinator. Marking coordinator unknown. Sent generation was Generation{generationId=-1, memberId='', protocol='null'}
+2026-09-02T21:42:50.667Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] org.apache.kafka.clients.NetworkClient   : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Client requested disconnect from node 2147483647
+2026-09-02T21:42:50.670Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Discovered group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.670Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null) is unavailable or invalid due to cause: coordinator unavailable. isDisconnected: false. Rediscovery will be attempted.
+2026-09-02T21:42:50.670Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Requesting disconnect from last known coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.791Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Discovered group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.792Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Request joining group due to: rebalance failed due to 'This is not the correct coordinator.' (NotCoordinatorException)
+2026-09-02T21:42:50.793Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] (Re-)joining group
+2026-09-02T21:42:50.795Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null) is unavailable or invalid due to cause: error response NOT_COORDINATOR. isDisconnected: false. Rediscovery will be attempted.
+2026-09-02T21:42:50.796Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Requesting disconnect from last known coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.796Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] JoinGroup failed: This is not the correct coordinator. Marking coordinator unknown. Sent generation was Generation{generationId=-1, memberId='', protocol='null'}
+2026-09-02T21:42:50.796Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] org.apache.kafka.clients.NetworkClient   : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Client requested disconnect from node 2147483647
+2026-09-02T21:42:50.798Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Discovered group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.798Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null) is unavailable or invalid due to cause: coordinator unavailable. isDisconnected: false. Rediscovery will be attempted.
+2026-09-02T21:42:50.798Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Requesting disconnect from last known coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.881Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Discovered group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.882Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Request joining group due to: rebalance failed due to 'This is not the correct coordinator.' (NotCoordinatorException)
+2026-09-02T21:42:50.882Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] (Re-)joining group
+2026-09-02T21:42:50.885Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null) is unavailable or invalid due to cause: error response NOT_COORDINATOR. isDisconnected: false. Rediscovery will be attempted.
+2026-09-02T21:42:50.885Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Requesting disconnect from last known coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.885Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] JoinGroup failed: This is not the correct coordinator. Marking coordinator unknown. Sent generation was Generation{generationId=-1, memberId='', protocol='null'}
+2026-09-02T21:42:50.885Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] org.apache.kafka.clients.NetworkClient   : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Client requested disconnect from node 2147483647
+2026-09-02T21:42:50.887Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Discovered group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.888Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null) is unavailable or invalid due to cause: coordinator unavailable. isDisconnected: false. Rediscovery will be attempted.
+2026-09-02T21:42:50.888Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Requesting disconnect from last known coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.973Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Discovered group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-02T21:42:50.974Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Request joining group due to: rebalance failed due to 'This is not the correct coordinator.' (NotCoordinatorException)
+2026-09-02T21:42:50.974Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] (Re-)joining group
+2026-09-02T21:42:50.983Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Request joining group due to: need to re-join with the given member-id: consumer-notification-service-1-6fbb3988-274b-4a9b-92ef-625df1c07cd3
+2026-09-02T21:42:50.983Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] (Re-)joining group
+2026-09-02T21:42:54.006Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Successfully joined group with generation Generation{generationId=1, memberId='consumer-notification-service-1-6fbb3988-274b-4a9b-92ef-625df1c07cd3', protocol='range'}
+2026-09-02T21:42:54.019Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Finished assignment for group at generation 1: {consumer-notification-service-1-6fbb3988-274b-4a9b-92ef-625df1c07cd3=Assignment(partitions=[policy-events-0])}
+2026-09-02T21:42:54.033Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Successfully synced group in generation Generation{generationId=1, memberId='consumer-notification-service-1-6fbb3988-274b-4a9b-92ef-625df1c07cd3', protocol='range'}
+2026-09-02T21:42:54.034Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Notifying assignor about the new Assignment(partitions=[policy-events-0])
+2026-09-02T21:42:54.038Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] k.c.c.i.ConsumerRebalanceListenerInvoker : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Adding newly assigned partitions: policy-events-0
+2026-09-02T21:42:54.056Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Found no committed offset for partition policy-events-0
+2026-09-02T21:42:54.066Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.SubscriptionState    : [Consumer clientId=consumer-notification-service-1, groupId=notification-service] Resetting offset for partition policy-events-0 to position FetchPosition{offset=0, offsetEpoch=Optional.empty, currentLeader=LeaderAndEpoch{leader=Optional[my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 0 rack: null)], epoch=0}}.
+2026-09-02T21:42:54.067Z  INFO 1 --- [notification-service] [ntainer#0-0-C-1] o.s.k.l.KafkaMessageListenerContainer    : notification-service: partitions assigned: [policy-events-0]
+2026-09-02T21:43:06.199Z  INFO 1 --- [notification-service] [nio-8082-exec-1] o.a.c.c.C.[Tomcat].[localhost].[/]       : Initializing Spring DispatcherServlet 'dispatcherServlet'
+2026-09-02T21:43:06.200Z  INFO 1 --- [notification-service] [nio-8082-exec-1] o.s.web.servlet.DispatcherServlet        : Initializing Servlet 'dispatcherServlet'
+2026-09-02T21:43:06.201Z  INFO 1 --- [notification-service] [nio-8082-exec-1] o.s.web.servlet.DispatcherServlet        : Completed initialization in 1 ms
+^Cziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/infra/k8s/toy-system/notification-service$ kubectl get pods -n toy-system
+NAME                                   READY   STATUS    RESTARTS   AGE
+notification-service-5b6759fdb-nhmfh   1/1     Running   0          2m19s
+
+
+从0/1到1/1，READY变绿——notification-service正式跑起来了。这份日志其实是个很好的实战案例，正好把我们之前聊过的好几个知识点串了起来，值得回顾确认几处细节。
+
+一、READY 0/1 → 1/1这个过程，正好印证了readinessProbe的作用
+
+注意日志时间线：
+
+21:42:50.005 — Spring Boot自己报告"Started ... in 3.85 seconds"，应用本身3.85秒就跑起来了
+但kubectl get pods一开始显示0/1，一直到大约16秒后才变成1/1
+
+这个"应用早就启动完了，但K8s还没判定它READY"的时间差，正是readinessProbe在发挥作用——回顾我们的配置initialDelaySeconds: 15，K8s要等15秒后才第一次去探测/actuator/health，探测成功才会把READY标记打上。这也解释了为什么日志最后你能看到Initializing Spring DispatcherServlet这条(在21:43:06，也就是启动后16秒左右)——那正是readinessProbe第一次真正发起HTTP请求，触发了Spring MVC对/actuator/health这个端点的懒加载初始化。
+
+二、日志里那一长串NOT_COORDINATOR报错——不是真的出错，是Kafka的正常"探路"过程
+
+这部分很容易让人一开始心里一紧，但其实是无害的：Kafka Consumer第一次启动时，需要先找到"这个消费者组的协调者(coordinator)是谁"，在单broker环境下，这个协调发现过程会经历几轮"猜错了、重试"的正常握手，NotCoordinatorException只是"这一轮问错了人，换个方式再问一次"，最终在21:42:54成功了(Successfully joined group)——从第一次尝试到成功，总共才4秒左右，这是完全正常的启动噪音，不是故障，以后看到类似日志不用紧张。
+
+三、kafbat UI上确认的两个topic——猜测应该是policy-events和它的死信topic
+
+回顾你之前notification-service的application.yml注释里提到的"死信Topic容错"机制(DeadLetterPublishingRecoverer)，这两个topic大概率是：
+
+policy-events——正常消费的业务topic(日志里Subscribed to topic(s): policy-events能对上)
+policy-events.DLT——死信topic，专门接收反序列化/处理失败、重试用尽的消息
+
+这也是一个很好的验证点——如果以后想测试"死信机制真的生效"，可以试着往policy-events塞一条格式错误的消息，看它会不会最终被转发进.DLT那个topic。
+
+notification-service这一关顺利通过，接下来按之前定的顺序，写它的ClusterIP Service(内部服务，不需要Ingress)，然后进入policy-service——这个会涉及MySQL+Redis的连接测试，也是我们Secret真正派上用场的地方。
+
+notification-service的Service(纯内部，简单)
+bash
+cat <<'EOF' > service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+  namespace: toy-system
+spec:
+  selector:
+    app: notification-service
+  ports:
+    - port: 8082
+      targetPort: 8082
+EOF
+
+kubectl apply -f service.yaml
+
+这次带了selector，跟我们之前给MySQL/Redis写的"无selector Service"正好相反——因为notification-service是K8s自己管理的Pod(带app: notification-service这个label)，K8s能自动帮它找到对应的Pod，不需要我们手动写EndpointSlice，这是最普通、最标准的Service用法。
+
+确认建好后，我们开始policy-service。

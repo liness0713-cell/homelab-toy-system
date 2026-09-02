@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: policy-service
+  namespace: toy-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: policy-service
+  template:
+    metadata:
+      labels:
+        app: policy-service
+    spec:
+      terminationGracePeriodSeconds: 35
+      containers:
+        - name: policy-service
+          image: localhost:5000/policy-service:202608291813-b836314
+          ports:
+            - containerPort: 8081
+          envFrom:
+            - configMapRef:
+                name: shared-config
+            - secretRef:
+                name: mysql-credentials
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8081
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8081
+            initialDelaySeconds: 40
+            periodSeconds: 20
