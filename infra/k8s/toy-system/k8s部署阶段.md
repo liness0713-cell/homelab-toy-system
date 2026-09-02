@@ -1175,3 +1175,99 @@ EOF
 kubectl apply -f service.yaml
 
 跑完确认一下kubectl get svc -n toy-system，接下来进入search-service——这是最复杂的一个，涉及之前我们准备好的CA证书Volume挂载，需要格外仔细核对。
+
+
+两个Service都确认建好了。现在进入search-service——这是唯一一个需要挂载CA证书Volume的服务，回顾一下我们之前定好的方案：entrypoint.sh脚本会在容器启动时，把my-es-es-http-certs-public这个Secret里的ca.crt导入Java的truststore，再启动应用。
+
+search-service的Deployment
+bash
+mkdir -p /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-system/search-service
+cd /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-system/search-service
+
+cat <<'EOF' > deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: search-service
+  namespace: toy-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: search-service
+  template:
+    metadata:
+      labels:
+        app: search-service
+    spec:
+      terminationGracePeriodSeconds: 35
+      containers:
+        - name: search-service
+          image: localhost:5000/search-service:<换成你实际的tag>
+          ports:
+            - containerPort: 8083
+          envFrom:
+            - configMapRef:
+                name: shared-config
+          env:
+            - name: SPRING_ELASTICSEARCH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: es-credentials
+                  key: ELASTICSEARCH_USERNAME
+            - name: SPRING_ELASTICSEARCH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: es-credentials
+                  key: ELASTICSEARCH_PASSWORD
+          volumeMounts:
+            - name: es-ca-cert
+              mountPath: /certs
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8083
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8083
+            initialDelaySeconds: 40
+            periodSeconds: 20
+      volumes:
+        - name: es-ca-cert
+          secret:
+            secretName: my-es-es-http-certs-public
+EOF
+
+kubectl apply -f deployment.yaml
+几处新出现的写法，逐个讲清楚
+env里用valueFrom.secretKeyRef，跟之前envFrom.secretRef不一样——这次是"精确取一个key"，不是"整份倒进来"
+
+回顾之前notification/policy两个服务，用的是envFrom.secretRef.name: xxx，效果是"这个Secret里所有key，原样变成环境变量"。这次不一样，是因为Secret里的key名字(ELASTICSEARCH_USERNAME)跟Spring Boot实际要读的环境变量名字(SPRING_ELASTICSEARCH_USERNAME)不一致——Spring Boot要通过环境变量注入spring.elasticsearch.username这个配置项，按Spring Boot的命名转换规则，对应的环境变量应该叫SPRING_ELASTICSEARCH_USERNAME，但我们之前建Secret时图省事写的是ELASTICSEARCH_USERNAME，两者对不上。用valueFrom.secretKeyRef可以做"改名映射"：新建一个叫SPRING_ELASTICSEARCH_USERNAME的环境变量，它的值"取自"es-credentials这个Secret里ELASTICSEARCH_USERNAME这个key——相当于"起个新名字，指向老地方的内容"，不需要重新建Secret。
+
+volumeMounts和volumes——这两个字段必须配对着看，一个在容器层，一个在Pod层
+yaml
+spec:
+  containers:
+    - volumeMounts:      ← 属于某一个具体容器：这个容器内部，把某个volume"挂"到哪个文件路径
+  volumes:                ← 属于整个Pod：声明"这个Pod总共有哪些volume可用，各自的数据来源是什么"
+
+volumes这一层，我们声明了一个叫es-ca-cert的volume，它的数据来源是my-es-es-http-certs-public这个Secret——这跟我们之前给Kafka/ES用的PersistentVolumeClaim是完全不同的volume类型：PVC类型的volume提供的是"一块可持久化写入的磁盘空间"，而secret类型的volume，是K8s自动把Secret里的每个key，转换成挂载目录下的一个个独立文件——比如my-es-es-http-certs-public这个Secret如果有ca.crt和tls.crt两个key，挂载后你会在容器里看到/certs/ca.crt和/certs/tls.crt这两个真实文件，K8s自动帮你完成了"从Secret到文件"的转换，不需要你手写任何转换逻辑。
+
+volumeMounts这一层，是在容器内部指定"把刚才那个es-ca-cert(名字要跟volumes里的一致)，挂到/certs这个路径下"——这正好对应我们之前entrypoint.sh脚本里写的/certs/ca.crt这个路径，两边必须严格对上。
+
+readOnly: true
+
+多加的一层保险——因为我们只是要"读取"这份证书，不需要容器有能力去修改它，显式声明只读，即使代码里有bug试图往这个路径写文件，也会被K8s直接拒绝，属于"最小权限"的又一次体现。
+
+建好后，重点看两处日志
+bash
+kubectl apply -f deployment.yaml
+kubectl logs -f deployment/search-service -n toy-system
+entrypoint.sh里keytool -importcert那一步的输出——正常应该显示类似Certificate was added to keystore；如果这里报错(比如/certs/ca.crt路径不存在)，说明volume挂载有问题，需要回头检查volumes/volumeMounts的名字是否完全一致
+Spring Boot启动后，Elasticsearch客户端相关的日志——有没有报SSL握手失败(SSLHandshakeException这类)，如果truststore没生效，这里会最先暴露出来
+
+先跑起来，把日志贴给我核对。

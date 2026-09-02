@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: search-service
+  namespace: toy-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: search-service
+  template:
+    metadata:
+      labels:
+        app: search-service
+    spec:
+      terminationGracePeriodSeconds: 35
+      containers:
+        - name: search-service
+          image: localhost:5000/search-service:202609020807-3805cc8
+          ports:
+            - containerPort: 8083
+          envFrom:
+            - configMapRef:
+                name: shared-config
+          env:
+            - name: SPRING_ELASTICSEARCH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: es-credentials
+                  key: ELASTICSEARCH_USERNAME
+            - name: SPRING_ELASTICSEARCH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: es-credentials
+                  key: ELASTICSEARCH_PASSWORD
+            - name: SERVER_PORT
+              value: "8083"
+          volumeMounts:
+            - name: es-ca-cert
+              mountPath: /certs
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8083
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8083
+            initialDelaySeconds: 40
+            periodSeconds: 20
+      volumes:
+        - name: es-ca-cert
+          secret:
+            secretName: my-es-es-http-certs-public
