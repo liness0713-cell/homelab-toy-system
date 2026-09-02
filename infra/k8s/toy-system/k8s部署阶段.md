@@ -1000,3 +1000,178 @@ Redis连接——有没有报连接失败(如果redis这个Service名字或端�
 Kafka Producer初始化——类似notification-service那种ProducerConfig values的输出
 
 先把镜像tag换成你实际推送成功的那个(记得核对一下policy-service当时打的tag)，跑起来后把日志贴给我，我们逐段核对这几个依赖是否都连通成功。
+
+
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/infra/k8s/toy-system/policy-service$ kubectl logs -f deployment/policy-service -n toy-system
+Standard Commons Logging discovery in action with spring-jcl: please remove commons-logging.jar from classpath in order to avoid potential conflicts
+
+  .   ____          _            __ _ _
+ /\\ / ___'_ __ _ _(_)_ __  __ _ \ \ \ \
+( ( )\___ | '_ | '_| | '_ \/ _` | \ \ \ \
+ \\/  ___)| |_)| | | | | || (_| |  ) ) ) )
+  '  |____| .__|_| |_|_| |_\__, | / / / /
+ =========|_|==============|___/=/_/_/_/
+
+ :: Spring Boot ::                (v3.3.5)
+
+2026-09-02T22:18:08.493Z  INFO 1 --- [policy-service] [           main] c.t.policy.PolicyServiceApplication      : Starting PolicyServiceApplication v0.1.0 using Java 21.0.12 with PID 1 (/app/app.jar started by root in /app)
+2026-09-02T22:18:08.495Z DEBUG 1 --- [policy-service] [           main] c.t.policy.PolicyServiceApplication      : Running with Spring Boot v3.3.5, Spring v6.1.14
+2026-09-02T22:18:08.496Z  INFO 1 --- [policy-service] [           main] c.t.policy.PolicyServiceApplication      : No active profile set, falling back to 1 default profile: "default"
+2026-09-02T22:18:10.193Z  INFO 1 --- [policy-service] [           main] .s.d.r.c.RepositoryConfigurationDelegate : Multiple Spring Data modules found, entering strict repository configuration mode
+2026-09-02T22:18:10.205Z  INFO 1 --- [policy-service] [           main] .s.d.r.c.RepositoryConfigurationDelegate : Bootstrapping Spring Data Redis repositories in DEFAULT mode.
+2026-09-02T22:18:10.230Z  INFO 1 --- [policy-service] [           main] .s.d.r.c.RepositoryConfigurationDelegate : Finished Spring Data repository scanning in 7 ms. Found 0 Redis repository interfaces.
+2026-09-02T22:18:11.209Z  INFO 1 --- [policy-service] [           main] o.s.b.w.embedded.tomcat.TomcatWebServer  : Tomcat initialized with port 8081 (http)
+2026-09-02T22:18:11.227Z  INFO 1 --- [policy-service] [           main] o.apache.catalina.core.StandardService   : Starting service [Tomcat]
+2026-09-02T22:18:11.227Z  INFO 1 --- [policy-service] [           main] o.apache.catalina.core.StandardEngine    : Starting Servlet engine: [Apache Tomcat/10.1.31]
+2026-09-02T22:18:11.268Z  INFO 1 --- [policy-service] [           main] o.a.c.c.C.[Tomcat].[localhost].[/]       : Initializing Spring embedded WebApplicationContext
+2026-09-02T22:18:11.270Z  INFO 1 --- [policy-service] [           main] w.s.c.ServletWebServerApplicationContext : Root WebApplicationContext: initialization completed in 2424 ms
+Standard Commons Logging discovery in action with spring-jcl: please remove commons-logging.jar from classpath in order to avoid potential conflicts
+2026-09-02T22:18:13.234Z  INFO 1 --- [policy-service] [           main] liquibase.changelog                      : Reading from toy_policy_db.DATABASECHANGELOG
+2026-09-02T22:18:13.307Z  INFO 1 --- [policy-service] [           main] liquibase.ui                             : Database is up to date, no changesets to execute
+2026-09-02T22:18:13.311Z  INFO 1 --- [policy-service] [           main] liquibase.changelog                      : Reading from toy_policy_db.DATABASECHANGELOG
+2026-09-02T22:18:13.324Z  INFO 1 --- [policy-service] [           main] liquibase.util                           : UPDATE SUMMARY
+2026-09-02T22:18:13.324Z  INFO 1 --- [policy-service] [           main] liquibase.util                           : Run:                          0
+2026-09-02T22:18:13.324Z  INFO 1 --- [policy-service] [           main] liquibase.util                           : Previously run:               4
+2026-09-02T22:18:13.324Z  INFO 1 --- [policy-service] [           main] liquibase.util                           : Filtered out:                 0
+2026-09-02T22:18:13.325Z  INFO 1 --- [policy-service] [           main] liquibase.util                           : -------------------------------
+2026-09-02T22:18:13.325Z  INFO 1 --- [policy-service] [           main] liquibase.util                           : Total change sets:            4
+2026-09-02T22:18:13.326Z  INFO 1 --- [policy-service] [           main] liquibase.util                           : Update summary generated
+2026-09-02T22:18:13.354Z  INFO 1 --- [policy-service] [           main] liquibase.lockservice                    : Successfully released change log lock
+2026-09-02T22:18:13.356Z  INFO 1 --- [policy-service] [           main] liquibase.command                        : Command execution complete
+2026-09-02T22:18:14.817Z  INFO 1 --- [policy-service] [           main] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Starting...
+2026-09-02T22:18:14.841Z  INFO 1 --- [policy-service] [           main] com.zaxxer.hikari.pool.HikariPool        : HikariPool-1 - Added connection com.mysql.cj.jdbc.ConnectionImpl@69e8f7a5
+2026-09-02T22:18:14.843Z  INFO 1 --- [policy-service] [           main] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Start completed.
+2026-09-02T22:18:15.765Z  INFO 1 --- [policy-service] [           main] com.cedarsoftware.util.MultiKeyMap       : MultiKeyMap stripe configuration: 16 locks for 8 cores
+2026-09-02T22:18:17.969Z  INFO 1 --- [policy-service] [           main] o.a.s.d.j.c.d.ShardingSphereDataSource   : ShardingSphere-JDBC Standalone mode started successfully.
+2026-09-02T22:18:17.969Z  INFO 1 --- [policy-service] [           main] o.a.s.d.j.c.d.ShardingSphereDataSource   : Instance id: 695db403-9026-4d06-b4e9-9a4fd5a35a5f, IP: 10.42.0.131
+2026-09-02T22:18:18.348Z  INFO 1 --- [policy-service] [           main] o.s.b.a.e.web.EndpointLinksResolver      : Exposing 2 endpoints beneath base path '/actuator'
+2026-09-02T22:18:18.459Z  INFO 1 --- [policy-service] [           main] o.a.k.clients.admin.AdminClientConfig    : AdminClientConfig values: 
+        auto.include.jmx.reporter = true
+        bootstrap.controllers = []
+        bootstrap.servers = [my-kafka-kafka-bootstrap.toy-infra.svc.cluster.local:9092]
+        client.dns.lookup = use_all_dns_ips
+        client.id = policy-service-admin-0
+        connections.max.idle.ms = 300000
+        default.api.timeout.ms = 60000
+        enable.metrics.push = true
+        metadata.max.age.ms = 300000
+        metric.reporters = []
+        metrics.num.samples = 2
+        metrics.recording.level = INFO
+        metrics.sample.window.ms = 30000
+        receive.buffer.bytes = 65536
+        reconnect.backoff.max.ms = 1000
+        reconnect.backoff.ms = 50
+        request.timeout.ms = 30000
+        retries = 2147483647
+        retry.backoff.max.ms = 1000
+        retry.backoff.ms = 100
+        sasl.client.callback.handler.class = null
+        sasl.jaas.config = null
+        sasl.kerberos.kinit.cmd = /usr/bin/kinit
+        sasl.kerberos.min.time.before.relogin = 60000
+        sasl.kerberos.service.name = null
+        sasl.kerberos.ticket.renew.jitter = 0.05
+        sasl.kerberos.ticket.renew.window.factor = 0.8
+        sasl.login.callback.handler.class = null
+        sasl.login.class = null
+        sasl.login.connect.timeout.ms = null
+        sasl.login.read.timeout.ms = null
+        sasl.login.refresh.buffer.seconds = 300
+        sasl.login.refresh.min.period.seconds = 60
+        sasl.login.refresh.window.factor = 0.8
+        sasl.login.refresh.window.jitter = 0.05
+        sasl.login.retry.backoff.max.ms = 10000
+        sasl.login.retry.backoff.ms = 100
+        sasl.mechanism = GSSAPI
+        sasl.oauthbearer.clock.skew.seconds = 30
+        sasl.oauthbearer.expected.audience = null
+        sasl.oauthbearer.expected.issuer = null
+        sasl.oauthbearer.jwks.endpoint.refresh.ms = 3600000
+        sasl.oauthbearer.jwks.endpoint.retry.backoff.max.ms = 10000
+        sasl.oauthbearer.jwks.endpoint.retry.backoff.ms = 100
+        sasl.oauthbearer.jwks.endpoint.url = null
+        sasl.oauthbearer.scope.claim.name = scope
+        sasl.oauthbearer.sub.claim.name = sub
+        sasl.oauthbearer.token.endpoint.url = null
+        security.protocol = PLAINTEXT
+        security.providers = null
+        send.buffer.bytes = 131072
+        socket.connection.setup.timeout.max.ms = 30000
+        socket.connection.setup.timeout.ms = 10000
+        ssl.cipher.suites = null
+        ssl.enabled.protocols = [TLSv1.2, TLSv1.3]
+        ssl.endpoint.identification.algorithm = https
+        ssl.engine.factory.class = null
+        ssl.key.password = null
+        ssl.keymanager.algorithm = SunX509
+        ssl.keystore.certificate.chain = null
+        ssl.keystore.key = null
+        ssl.keystore.location = null
+        ssl.keystore.password = null
+        ssl.keystore.type = JKS
+        ssl.protocol = TLSv1.3
+        ssl.provider = null
+        ssl.secure.random.implementation = null
+        ssl.trustmanager.algorithm = PKIX
+        ssl.truststore.certificates = null
+        ssl.truststore.location = null
+        ssl.truststore.password = null
+        ssl.truststore.type = JKS
+
+2026-09-02T22:18:18.692Z  INFO 1 --- [policy-service] [           main] o.a.kafka.common.utils.AppInfoParser     : Kafka version: 3.7.1
+2026-09-02T22:18:18.693Z  INFO 1 --- [policy-service] [           main] o.a.kafka.common.utils.AppInfoParser     : Kafka commitId: e2494e6ffb89f828
+2026-09-02T22:18:18.693Z  INFO 1 --- [policy-service] [           main] o.a.kafka.common.utils.AppInfoParser     : Kafka startTimeMs: 1788387498691
+2026-09-02T22:18:19.158Z  INFO 1 --- [policy-service] [           main] o.springframework.kafka.core.KafkaAdmin  : Topic 'policy-events' exists but has a different partition count: 1 not 3, increasing if the broker supports it
+2026-09-02T22:18:19.196Z  INFO 1 --- [policy-service] [service-admin-0] o.a.kafka.common.utils.AppInfoParser     : App info kafka.admin.client for policy-service-admin-0 unregistered
+2026-09-02T22:18:19.204Z  INFO 1 --- [policy-service] [service-admin-0] o.apache.kafka.common.metrics.Metrics    : Metrics scheduler closed
+2026-09-02T22:18:19.204Z  INFO 1 --- [policy-service] [service-admin-0] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.metrics.JmxReporter
+2026-09-02T22:18:19.205Z  INFO 1 --- [policy-service] [service-admin-0] o.apache.kafka.common.metrics.Metrics    : Metrics reporters closed
+2026-09-02T22:18:19.222Z  INFO 1 --- [policy-service] [           main] o.s.b.w.embedded.tomcat.TomcatWebServer  : Tomcat started on port 8081 (http) with context path '/'
+2026-09-02T22:18:19.240Z  INFO 1 --- [policy-service] [           main] c.t.policy.PolicyServiceApplication      : Started PolicyServiceApplication in 11.384 seconds (process running for 12.143)
+2026-09-02T22:18:27.582Z  INFO 1 --- [policy-service] [nio-8081-exec-1] o.a.c.c.C.[Tomcat].[localhost].[/]       : Initializing Spring DispatcherServlet 'dispatcherServlet'
+2026-09-02T22:18:27.582Z  INFO 1 --- [policy-service] [nio-8081-exec-1] o.s.web.servlet.DispatcherServlet        : Initializing Servlet 'dispatcherServlet'
+2026-09-02T22:18:27.585Z  INFO 1 --- [policy-service] [nio-8081-exec-1] o.s.web.servlet.DispatcherServlet        : Completed initialization in 2 ms
+2026-09-02T22:18:27.687Z  INFO 1 --- [policy-service] [nio-8081-exec-1] com.zaxxer.hikari.HikariDataSource       : raw-mysql-shard-aware - Starting...
+2026-09-02T22:18:27.692Z  INFO 1 --- [policy-service] [nio-8081-exec-1] com.zaxxer.hikari.pool.HikariPool        : raw-mysql-shard-aware - Added connection com.mysql.cj.jdbc.ConnectionImpl@1641be16
+2026-09-02T22:18:27.695Z  INFO 1 --- [policy-service] [nio-8081-exec-1] com.zaxxer.hikari.HikariDataSource       : raw-mysql-shard-aware - Start completed.
+
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/infra/k8s/toy-system/policy-service$ kubectl get pods -n toy-system
+NAME                                   READY   STATUS    RESTARTS   AGE
+notification-service-5b6759fdb-nhmfh   1/1     Running   0          37m
+policy-service-67bc6564fc-5mjrk        1/1     Running   0          2m8s
+
+
+
+1/1 Running，policy-service这个最复杂的服务也顺利跑通了——Liquibase确认"数据库已是最新版本，无需执行新迁移"(说明你之前本地开发时这套schema就已经跑过一次，容器化后连的是同一个MySQL实例，历史记录完整保留)，ShardingSphere分片路由初始化成功，MySQL连接池(Hikari)正常，Kafka Admin也连上了。
+
+一个不是错误、但值得留意的细节
+Topic 'policy-events' exists but has a different partition count: 1 not 3, increasing if the broker supports it
+
+这句话的意思是：policy-service这边配置期望policy-events这个topic有3个分区，但实际topic只有1个分区(推测是notification-service第一次启动时，Kafka用默认设置自动帮你创建了这个topic，默认分区数是1)。Spring Kafka检测到这个不一致，会尝试自动把分区数从1提升到3——这不是报错，是一个自动修复动作，但分区数只能往上加、不能减，也不能通过"改配置"回退，如果以后这个数字需要调整，得有意识地记住这一点。目前对homelab场景完全无害，可以先不用管，等以后接触真实生产环境时，"topic分区数不匹配"是个值得警觉的信号(生产环境通常会要求提前用IaC工具显式声明分区数，而不是靠应用自动推断)。
+
+另一个有意思的细节：两个连接池，两个时间点
+22:18:14 — HikariPool-1（Liquibase专用，直连真实MySQL做迁移检查）
+22:18:27 — raw-mysql-shard-aware（真正业务用的、经过ShardingSphere包装的连接池）
+
+第二个连接池是在readinessProbe第一次打进来的那个请求触发时才创建的(时间对得上：22:18:27.582探针请求进来，紧接着22:18:27.687连接池才开始"Starting")——这是Spring Boot对DataSource的**懒加载(lazy initialization)**行为，业务用的数据源不会在应用启动那一刻就抢着连接，而是等第一次真正有请求需要用到它时才建立，这也是为什么你之前notification-service那次和这次policy-service，日志里能看到"启动完成"和"第一次实际处理请求"之间有个时间差——那正是readinessProbe充当了"第一个访客"的角色，间接触发了这个懒加载。
+
+Service
+bash
+cat <<'EOF' > service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: policy-service
+  namespace: toy-system
+spec:
+  selector:
+    app: policy-service
+  ports:
+    - port: 8081
+      targetPort: 8081
+EOF
+
+kubectl apply -f service.yaml
+
+跑完确认一下kubectl get svc -n toy-system，接下来进入search-service——这是最复杂的一个，涉及之前我们准备好的CA证书Volume挂载，需要格外仔细核对。
