@@ -915,3 +915,88 @@ kubectl apply -f service.yaml
 这次带了selector，跟我们之前给MySQL/Redis写的"无selector Service"正好相反——因为notification-service是K8s自己管理的Pod(带app: notification-service这个label)，K8s能自动帮它找到对应的Pod，不需要我们手动写EndpointSlice，这是最普通、最标准的Service用法。
 
 确认建好后，我们开始policy-service。
+
+
+
+
+Service建好了，notification-service这条线彻底完工。开始policy-service，这个是目前最复杂的一个——涉及MySQL、Redis、Kafka三个依赖，还有Liquibase在启动时跑数据库迁移，需要多留意几个细节。
+
+policy-service的Deployment
+bash
+mkdir -p /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-system/policy-service
+cd /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-system/policy-service
+
+cat <<'EOF' > deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: policy-service
+  namespace: toy-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: policy-service
+  template:
+    metadata:
+      labels:
+        app: policy-service
+    spec:
+      terminationGracePeriodSeconds: 35
+      containers:
+        - name: policy-service
+          image: localhost:5000/policy-service:<换成你实际的tag>
+          ports:
+            - containerPort: 8081
+          envFrom:
+            - configMapRef:
+                name: shared-config
+            - secretRef:
+                name: mysql-credentials
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8081
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8081
+            initialDelaySeconds: 40
+            periodSeconds: 20
+EOF
+
+kubectl apply -f deployment.yaml
+跟notification-service相比，这里有几处值得注意的差异
+envFrom同时挂了ConfigMap和Secret
+yaml
+envFrom:
+  - configMapRef:
+      name: shared-config
+  - secretRef:
+      name: mysql-credentials
+
+envFrom这个字段本身可以接受一个列表，不局限于一个来源——shared-config提供SPRING_DATASOURCE_URL、KAFKA_BOOTSTRAP_SERVERS这类地址信息，mysql-credentials这个Secret提供SPRING_DATASOURCE_USERNAME/PASSWORD这两个敏感值，两者合并后，容器里最终看到的环境变量，是这两个来源叠加的结果——不需要你手动把Secret里的内容再抄一遍到ConfigMap或反过来，各自管各自的。
+
+initialDelaySeconds调得比notification-service更宽松(20/40 vs 15/30)
+
+回顾一下policy-service的application.yml——它比notification-service多了Liquibase数据库迁移这一步(spring.liquibase.change-log那段配置)，这一步会在应用启动过程中同步执行，跑完才会继续往下走——虽然平时可能很快，但比"只是连个Kafka"要多花一点时间，给探针多留点缓冲，避免启动稍微慢一点点就被误判。
+
+一个需要你确认、可能影响启动结果的点：MySQL里目前有没有已经手动建过的表
+
+回顾你很早之前那次SHOW DATABASES验证——当时toy_policy_db这个库已经存在，但没有验证过里面有没有表。Liquibase启动时会做这几件事：检查DATABASECHANGELOG这张记录表存不存在，不存在就自己建，然后按db.changelog-master.xml里定义的顺序，把还没执行过的迁移脚本一个个跑一遍(建policy_0~policy_3这类分片表)——这个过程完全自动，不需要你手动干预，但值得留意日志里Liquibase相关的输出，确认它真的顺利跑完了迁移，而不是卡住或报错。
+
+Apply之后，重点看这几处日志
+bash
+kubectl apply -f deployment.yaml
+kubectl logs -f deployment/policy-service -n toy-system
+
+重点关注的几个信号(对应它要连的三个依赖)：
+
+Liquibase相关日志——有没有类似Successfully acquired change log lock、Update summary这类字样，代表数据库迁移跑通了
+ShardingSphere相关日志——你之前application.yml注释里提到DataSource是通过ShardingSphereConfig手动构造的，启动日志里应该能看到它加载分片规则的输出
+Redis连接——有没有报连接失败(如果redis这个Service名字或端口有误，这里会最先暴露出来)
+Kafka Producer初始化——类似notification-service那种ProducerConfig values的输出
+
+先把镜像tag换成你实际推送成功的那个(记得核对一下policy-service当时打的tag)，跑起来后把日志贴给我，我们逐段核对这几个依赖是否都连通成功。

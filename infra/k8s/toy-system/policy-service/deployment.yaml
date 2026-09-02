@@ -24,6 +24,9 @@ spec:
                 name: shared-config
             - secretRef:
                 name: mysql-credentials
+          env:
+            - name: SERVER_PORT
+              value: "8081"
           readinessProbe:
             httpGet:
               path: /actuator/health
