@@ -1271,3 +1271,63 @@ entrypoint.sh里keytool -importcert那一步的输出——正常应该显示类
 Spring Boot启动后，Elasticsearch客户端相关的日志——有没有报SSL握手失败(SSLHandshakeException这类)，如果truststore没生效，这里会最先暴露出来
 
 先跑起来，把日志贴给我核对。
+
+ContainerCreating状态卡住超过1分钟还没进入Running，kubectl logs此时读不到任何输出是正常的(容器都还没真正启动，何谈日志)——这种情况下该查的是describe里的Events部分，那里会记录"卡在哪一步、具体什么原因"。
+
+bash
+kubectl describe pod search-service-54c856587-w57vm -n toy-system
+
+重点看最下面的Events部分，把完整输出贴给我。
+
+我猜测的几种可能，供你先自查
+
+最可能：镜像拉取问题——回顾一下Deployment里image字段，你有没有换成search-service实际推送成功的那个tag(我给的模板里写的是占位符<换成你实际的tag>)？如果这行忘了替换，或者tag打错了，会一直卡在ContainerCreating(准确说会先转成ErrImagePull/ImagePullBackOff，但看describe的Events才能确认)。
+
+其次可能：volume挂载失败——如果volumes.secret.secretName: my-es-es-http-certs-public这个名字打错了，或者这个Secret其实不在toy-system这个namespace下(这里有个重要的点要确认——ECK当初创建my-es-es-http-certs-public时，是在哪个namespace下创建的？如果ES本身部署在toy-infra，这个Secret大概率也在toy-infra里，而search-service现在要用它的时候是在toy-system——Secret是namespace级别的资源，不能跨namespace直接引用，如果是这个原因，会在volume挂载这一步卡住)。
+
+bash
+kubectl get secret my-es-es-http-certs-public -n toy-system
+kubectl get secret my-es-es-http-certs-public -n toy-infra
+
+先跑这两条，确认这个Secret实际存在于哪个namespace，这很可能就是问题根源——如果它在toy-infra而不在toy-system，需要手动把这个Secret"复制"一份到toy-system才能被引用。
+
+Events:
+  Type     Reason       Age                 From               Message
+  ----     ------       ----                ----               -------
+  Normal   Scheduled    2m13s               default-scheduler  Successfully assigned toy-system/search-service-54c856587-w57vm to ziqiao-asm100
+  Warning  FailedMount  5s (x9 over 2m13s)  kubelet            MountVolume.SetUp failed for volume "es-ca-cert" : secret "my-es-es-http-certs-public" not found
+
+
+
+  确认了，正是这个原因——Secret是namespace级别的资源，my-es-es-http-certs-public实际存在于toy-infra，而search-service这个Pod跑在toy-system，两者互相看不到彼此的Secret，kubelet挂载卷时自然找不到，报not found。
+
+需要做的：把这份证书"复制"一份到toy-system
+
+K8s没有"跨namespace引用同一个Secret"这种机制，只能手动复制一份内容一致、但归属于toy-system的新Secret。用这条命令直接搬运，不用自己手动base64编解码：
+
+bash
+kubectl get secret my-es-es-http-certs-public -n toy-infra -o yaml \
+  | sed 's/namespace: toy-infra/namespace: toy-system/' \
+  | grep -v '^\s*resourceVersion:\|^\s*uid:\|^\s*creationTimestamp:\|^\s*selfLink:' \
+  | kubectl apply -f -
+
+拆开讲这条管道做了什么：
+
+kubectl get secret ... -o yaml——把这个Secret完整的yaml定义导出来(包括已经是Base64编码的证书内容，不用你操心解码)
+sed 's/namespace: toy-infra/namespace: toy-system/'——把yaml里声明的namespace，从toy-infra改成toy-system
+grep -v ...——这一步必须做，原本导出的yaml里带着resourceVersion、uid、creationTimestamp这几个字段，这些是K8s给"已存在资源"打的系统级追踪标记，如果原样带着去apply一个新namespace下的资源，会被K8s拒绝(这些字段应该由系统自动生成，不该由你手动指定)，所以要先过滤掉
+kubectl apply -f -——最后这个-表示"从标准输入读取内容"，也就是接收前面管道传过来的、已经改好namespace的yaml，直接创建
+验证复制成功
+bash
+kubectl get secret my-es-es-http-certs-public -n toy-system
+
+应该能看到这个Secret现在也出现在toy-system下了。
+
+一个值得记住的隐患：这份"复制"出来的Secret，不会跟着原版自动同步更新
+
+这是需要现在就意识到的一个长期维护点——ECK如果以后重新签发证书(比如证书快过期、或者你重建了ES集群)，toy-infra里那份原版my-es-es-http-certs-public会被Operator自动更新，但你手动复制到toy-system的这份不会跟着变，会变成一份过期的"快照"。这种"跨namespace共享敏感资源"的场景，在真实生产环境里，通常会用专门的工具(比如kubernetes-replicator这类controller，能自动监听源Secret变化、同步复制到多个namespace)来解决，你现在这套homelab规模小，手动复制、以后遇到证书失效问题时再重新跑一次这条命令，是完全可以接受的取舍——只是要把这个"隐藏的维护债务"记在心里，不是"设置一次就永远没事"的东西。
+
+跑完确认Secret存在后，重新apply一次Deployment(或者直接看Pod会不会自动重试挂载成功，不需要重新apply，kubelet会自己重试)：
+
+bash
+kubectl get pods -n toy-system -w
