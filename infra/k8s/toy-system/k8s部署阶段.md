@@ -1331,3 +1331,427 @@ kubectl get secret my-es-es-http-certs-public -n toy-system
 
 bash
 kubectl get pods -n toy-system -w
+
+
+
+| grep -v '^\s*resourceVersion:\|^\s*uid:\|^\s*creationTimestamp:\|^\s*selfLink:' \
+细讲一下，看的有点懵，怎么就把值给清空了？
+
+这里有个理解偏差要先纠正——grep -v不是"把值清空"，而是"把整行删掉"，效果更像是拿橡皮擦把某几行字整行擦掉，而不是把这行里的某个词换成空白。搞清楚grep的工作方式，再逐段拆这条命令。
+
+grep最基本的行为：逐行判断，符合条件的行"留下"或"删掉"
+
+grep默认是"只留下匹配的行"，比如grep "error" file.txt就是"把file.txt里，包含error这个词的那些行打印出来，其余行完全不显示"。
+
+-v——把这个逻辑反过来
+
+-v是"invert"(反转)的意思——加上它之后，变成"只留下不匹配的行，把匹配的行整行去掉"。这也是为什么我们这里用-v：我们想要的是"删掉某几种特定的行，保留其余所有内容"。
+
+中间这段正则表达式，拆开看每个符号在匹配什么
+'^\s*resourceVersion:\|^\s*uid:\|^\s*creationTimestamp:\|^\s*selfLink:'
+^——表示"这一行的开头"，加在最前面意思是"必须从行首开始匹配，不能是这个词出现在行中间某处"
+\s*——\s代表"一个空白字符"(空格或制表符)，*代表"前面这个东西出现0次或任意多次"——合起来意思是"行首可能有一些缩进空格，也可能没有，都算数"。这是必须的，因为yaml里字段通常带着缩进(比如 resourceVersion: "12345"前面有两个空格)，直接写^resourceVersion:会因为没考虑到前面的空格而匹配不上
+resourceVersion:——这才是真正要找的关键词本身，后面带个冒号，确保匹配的是"这个字段的声明行"，而不是碰巧某处出现了这个单词
+\|——这是正则表达式里的"或"，grep这种基础模式下，|本身没有特殊含义，需要用反斜杠转义成\|才会被识别成"或"的意思。整条表达式用\|把四个独立的匹配条件串起来，意思是"只要这一行匹配这四种情况里的任意一种，就算命中"
+串起来，这条命令到底在做什么
+
+"把输入内容里，凡是以resourceVersion:、uid:、creationTimestamp:、selfLink:开头(允许前面有缩进空格)的这几行，整行删掉，其余所有行原样保留，输出剩下的部分。"
+
+用一个具体的yaml片段直观感受一下
+
+假设原始导出的yaml长这样：
+
+yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: my-es-es-http-certs-public
+  namespace: toy-infra
+  resourceVersion: "192250"
+  uid: bc4ae286-0914-40ff-b9f1-30859c5c2c30
+  creationTimestamp: "2026-08-24T22:33:45Z"
+data:
+  ca.crt: LS0tLS1CRUdJTi...
+  tls.crt: LS0tLS1CRUdJTi...
+
+经过sed(改namespace)和grep -v(删这几行)处理后，变成：
+
+yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: my-es-es-http-certs-public
+  namespace: toy-system
+data:
+  ca.crt: LS0tLS1CRUdJTi...
+  tls.crt: LS0tLS1CRUdJTi...
+
+data底下ca.crt、tls.crt这些真正的证书内容，完整保留、一个字节都没动——被删掉的，只是metadata底下那几个"K8s自己用来追踪这个资源身份/版本历史"的元数据字段，这些字段本身不携带任何证书内容，删掉它们不影响证书数据本身，只是让这份yaml变得"干净"到可以被当成"全新资源"提交给toy-system这个namespace(如果不删，K8s会因为看到一个不属于toy-system、来路不明的resourceVersion而拒绝这次创建)。
+
+
+
+kubectl describe pod search-service-54c856587-w57vm -n toy-system
+用这个命令看pod容器自己的日志，而不是容器内应用的，对不对？比如容器意外重启，这个命令就能看出来。。。如果这个pod被销毁了，它的事件是不是就都没了
+
+
+前半句理解对了，后半句有个细节要澄清。
+
+一、kubectl describe pod看的是什么——你说的对，不是应用日志
+
+这条命令展示的是K8s自己记录的"这个Pod的生命周期状态"，包括：容器有没有重启过(RESTARTS计数)、当前处于什么阶段(Running/Pending/ContainerCreating)、资源配置(挂了哪些volume、哪些环境变量来源)，以及最下面那部分Events——这是K8s各个组件(kubelet、scheduler等)在处理这个Pod过程中，记录下的"发生过什么事"的流水账(比如"成功调度到了哪个node"、"镜像拉取失败了"、"挂载卷失败了")。
+
+应用自己打印的业务日志(比如Spring Boot的启动信息、Kafka连接日志)，只能通过kubectl logs看——这是两个完全独立的信息来源：describe看的是"K8s怎么管理这个容器"，logs看的是"容器里的程序自己在说什么"。你之前遇到的"容器意外重启"，确实应该先看describe里的RESTARTS次数和Last State(上一次容器退出的原因)，这个判断没问题。
+
+二、Events会不会随Pod销毁而消失——这里有个更精确的机制要讲清楚
+
+Event本身是K8s里一种独立的资源类型(kind: Event)，不是"挂在Pod对象内部"的附属品——它通过一个"引用字段"(involvedObject)指向"这个事件是关于哪个Pod的"，本质上是两个各自独立存在、但互相关联的对象。
+
+这带来一个关键结论：Event有自己独立的生命周期，不跟着Pod的生死走，具体是这样：
+
+Event有自己的过期时间(TTL)——K8s默认会在Event产生后的一段时间(常见默认是1小时，具体数值由集群的--event-ttl参数决定)后，自动把这个Event从etcd里清理掉，不管这个Pod当时是死是活
+反过来，Pod被删除了，跟它相关的Event不会立刻消失——只要还没到TTL过期时间，这些Event依然存在，只是你不能再用kubectl describe pod <已删除的pod名字>去查了(因为describe pod需要先找到这个Pod对象本身，Pod都没了，describe自然报错"找不到该资源")，但可以用另一种方式单独查Event本身：
+bash
+kubectl get events -n toy-system --field-selector involvedObject.name=search-service-54c856587-w57vm
+
+这条命令是直接查询Event这个资源类型本身(不依赖Pod对象是否还存在)，只要没超过TTL，即使Pod已经被删除，这里依然能查到当时发生过的事件。
+
+一句话总结这个机制
+
+Event的存续，只取决于"有没有超过TTL"，跟"Pod是否还活着"完全无关——Pod活着但Event过期了，一样看不到；Pod已经死了但Event还没过期，依然能查到。这也是为什么生产环境里，如果需要"长期审计、事后追溯问题"，通常会用专门的日志/事件采集系统(比如把Event同步进ES这类系统里长期保存)，而不是依赖K8s自己这个"一小时就自动清理"的短期Event存储——这跟你之前搭的这套ES/Kibana，如果以后有精力，其实也可以拿来做这件事，是个挺自然的延伸方向。
+
+
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system$ kubectl get secret my-es-es-http-certs-public -n toy-infra -o yaml
+apiVersion: v1
+data:
+  ca.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUROakNDQWg2Z0F3SUJBZ0lSQUxNWTJYbDVjMFBVc1dZbUVuaWp3QWN3RFFZSktvWklodmNOQVFFTEJRQXcKSlRFT01Bd0dBMVVFQ3hNRmJYa3RaWE14RXpBUkJnTlZCQU1UQ20xNUxXVnpMV2gwZEhBd0hoY05Nall3T0RJMApNakl6TXpJeVdoY05NamN3T0RJME1qSTBNekl5V2pBbE1RNHdEQVlEVlFRTEV3VnRlUzFsY3pFVE1CRUdBMVVFCkF4TUtiWGt0WlhNdGFIUjBjRENDQVNJd0RRWUpLb1pJaHZjTkFRRUJCUUFEZ2dFUEFEQ0NBUW9DZ2dFQkFMRVoKMUhJeTcreko2RTVnR3VldHBUTlRBY0d0RTU0T0tRakUxUkZSZm4wbDltRkxXRFVKeE1oRVk1K0d0WSt1bW5ERQpmQTA0dkhrcnk0YWlKL2xyTlhJRW5wQXZHdjhyTjdoUEpnVmEzUU5iMU16SUxBdno4SytxQzFvUHRiWHdpSG1KCmtpbWtNZVZHSWtqdTBMdjFqL2tXRGd2ajN1N3JBNXRuR0UzZEZubFpDcFNWRk53aGIxWlB3QWxKeisvUWJQalAKajRObDVFSTFBUVFweU10QVp0bGVSRzRlRWZqdGw1UUJ2d3N5L3J3UnJXQURDZVBqM0FBWkYrSDl6OFBON3lUVwpIc3VkOTc0QkMxVndEYnFNWWdVbVdsSmJnQm5ubFN2QWVKRU9pRG9HTi9QellhRHVFYko1amJqYlY0VU1seHNJCmhlWi9PMDJHRVZWdzlGVHpLNmNDQXdFQUFhTmhNRjh3RGdZRFZSMFBBUUgvQkFRREFnS0VNQjBHQTFVZEpRUVcKTUJRR0NDc0dBUVVGQndNQkJnZ3JCZ0VGQlFjREFqQVBCZ05WSFJNQkFmOEVCVEFEQVFIL01CMEdBMVVkRGdRVwpCQlNXY0o1MHA0R3NlR2JBTU5YZ0xEallsL3dOMnpBTkJna3Foa2lHOXcwQkFRc0ZBQU9DQVFFQXFMQXRjVTB0CjZtN3ErQ01BL0d0a2RoWDVhUDUxakE3ME1FS2RvcTFlWXRVNEZuU3Z4elFiVGVXUk5VQXFOMWtqc0FxSUV5SUwKMTkrNlhsMU5hdUUxR2pkT29HTENmM1hkQ0NRY0M3eWlhVFdpU3laWDljYzhQNEVBMzZvbmhPQkcrZG03aC9YbwpTWjZCOUdzSzVkZ1R6am5kM3JTdE9ROVJCcUt1SnJqM0xweDd6aVVyMjlvdkNtM1puTEpqb3dLaWNhSkFMTXcxCkxHVURLQTRJR2syazNSUnY5ZTk0STRGb1UwUTV1YndJY1U3WEZBNXdDU05EbmpZYzdFK0thMmsrMkhmcjJlckIKaGNBYks4Z3hGN3NXZUFkd1pDQm94Ym1SRE9JNWlyaGVrWXM0a1phWndPWndqQ1A0ZnUvVllQandGM2dteURETAo5T2o5a3RKQzc0a21udz09Ci0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K
+  tls.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUVIekNDQXdlZ0F3SUJBZ0lRQkg2cW5ITGNhMWdQeEdTL2k5SEF6VEFOQmdrcWhraUc5dzBCQVFzRkFEQWwKTVE0d0RBWURWUVFMRXdWdGVTMWxjekVUTUJFR0ExVUVBeE1LYlhrdFpYTXRhSFIwY0RBZUZ3MHlOakE0TWpReQpNak16TWpKYUZ3MHlOekE0TWpReU1qUXpNakphTURzeERqQU1CZ05WQkFzVEJXMTVMV1Z6TVNrd0p3WURWUVFECkV5QnRlUzFsY3kxbGN5MW9kSFJ3TG5SdmVTMXBibVp5WVM1bGN5NXNiMk5oYkRDQ0FTSXdEUVlKS29aSWh2Y04KQVFFQkJRQURnZ0VQQURDQ0FRb0NnZ0VCQU1oeWdLQWRCYWFKNFMrcS9IYXc3c3JxZWhqQ1BUTTh6bGthU3lSbApZU1dmNEtVUnZ3a3gvaE9pRWV2amx2QlJRQ1hmWXFLOTlSOU1nV0MvNjZ4VEwwS2w2cGZISGJGQmtleVZ4RGlPCmxOMVBEU0Jxd1JUL1VRdzZzQUQ4dUFNK3B6eVpYZ2lzb1BxY0IzQ3MvbWRwVThseTlycXhUbm5TeTJUcFhiR0wKeXgyZGRMcjRZN3JyOVdsTUgyQWdpQm4zSmJ6M1JSNjlQdForbVQwczVaNTNPWnRYNXBvdjlYajg0MVZRd0RPZwo4elMzc2FQZE90eDdDY0tNekxWbGg0akdnTHlUQ0tLbXFFUlJjanJ2Q2dHQkpvNXp3N2EzZy9lUWc2MWt4WjNTCm15eGVuTUsveVJrekl4SHBRVGkzaThubG1FYmR6V3duRjVHUmo2WEhUSnNyUkVjQ0F3RUFBYU9DQVRNd2dnRXYKTUE0R0ExVWREd0VCL3dRRUF3SUZvREFkQmdOVkhTVUVGakFVQmdnckJnRUZCUWNEQVFZSUt3WUJCUVVIQXdJdwpId1lEVlIwakJCZ3dGb0FVbG5DZWRLZUJySGhtd0REVjRDdzQySmY4RGRzd2dkd0dBMVVkRVFTQjFEQ0IwWUlnCmJYa3RaWE10WlhNdGFIUjBjQzUwYjNrdGFXNW1jbUV1WlhNdWJHOWpZV3lDRFcxNUxXVnpMV1Z6TFdoMGRIQ0MKRzIxNUxXVnpMV1Z6TFdoMGRIQXVkRzk1TFdsdVpuSmhMbk4yWTRJWGJYa3RaWE10WlhNdGFIUjBjQzUwYjNrdAphVzVtY21HQ0pHMTVMV1Z6TFdWekxXbHVkR1Z5Ym1Gc0xXaDBkSEF1ZEc5NUxXbHVabkpoTG5OMlk0SWdiWGt0ClpYTXRaWE10YVc1MFpYSnVZV3d0YUhSMGNDNTBiM2t0YVc1bWNtR0NJQ291YlhrdFpYTXRaWE10WkdWbVlYVnMKZEM1MGIza3RhVzVtY21FdWMzWmpNQTBHQ1NxR1NJYjNEUUVCQ3dVQUE0SUJBUUErQ0l5WEwyMTByRkkvN1hERQpXQ3I3bnd2bFFRcnZmekRyVmRPdXlzc1pNUmlkdFkwQ080WGVEMHNITSt6R0hKZ1ZVdFBaMGFIWkZIZVFYWFR0ClpPNEFDMStPUlNUbm9hN1hnTkxlWXNXd0xoZEtaajIyQ2lUZkxoYzhCZlpHWXVLWmE3bFlXalhKcDVPdFNEeVQKL1huUi9iSzIvczZsZHdxM3lxVllSSVdYSTE4WVpuTThQb0F4TmN3Z21JREZVOHc2VzJMUkljQ3FtUWp5T21xTgovOEJabDZkaWQwVCs2RE8yZFhuWmNOT01POUNkdmdieTlheWZZUzFtaUhjMCt4bzIyandvU2Jib1BlTVVma1A2CkVpR0JYSTVrdTg2ZDNlODloQzlEM3dVd1JKcjZ4VVJRZmw4MDZKMkhISkQ2TXB5NzBvSVBoQm5kUFR6a1ZHZnIKZ1puNgotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCi0tLS0tQkVHSU4gQ0VSVElGSUNBVEUtLS0tLQpNSUlETmpDQ0FoNmdBd0lCQWdJUkFMTVkyWGw1YzBQVXNXWW1Fbmlqd0Fjd0RRWUpLb1pJaHZjTkFRRUxCUUF3CkpURU9NQXdHQTFVRUN4TUZiWGt0WlhNeEV6QVJCZ05WQkFNVENtMTVMV1Z6TFdoMGRIQXdIaGNOTWpZd09ESTAKTWpJek16SXlXaGNOTWpjd09ESTBNakkwTXpJeVdqQWxNUTR3REFZRFZRUUxFd1Z0ZVMxbGN6RVRNQkVHQTFVRQpBeE1LYlhrdFpYTXRhSFIwY0RDQ0FTSXdEUVlKS29aSWh2Y05BUUVCQlFBRGdnRVBBRENDQVFvQ2dnRUJBTEVaCjFISXk3K3pKNkU1Z0d1ZXRwVE5UQWNHdEU1NE9LUWpFMVJGUmZuMGw5bUZMV0RVSnhNaEVZNStHdFkrdW1uREUKZkEwNHZIa3J5NGFpSi9sck5YSUVucEF2R3Y4ck43aFBKZ1ZhM1FOYjFNeklMQXZ6OEsrcUMxb1B0Ylh3aUhtSgpraW1rTWVWR0lranUwTHYxai9rV0RndmozdTdyQTV0bkdFM2RGbmxaQ3BTVkZOd2hiMVpQd0FsSnorL1FiUGpQCmo0Tmw1RUkxQVFRcHlNdEFadGxlUkc0ZUVmanRsNVFCdndzeS9yd1JyV0FEQ2VQajNBQVpGK0g5ejhQTjd5VFcKSHN1ZDk3NEJDMVZ3RGJxTVlnVW1XbEpiZ0JubmxTdkFlSkVPaURvR04vUHpZYUR1RWJKNWpiamJWNFVNbHhzSQpoZVovTzAyR0VWVnc5RlR6SzZjQ0F3RUFBYU5oTUY4d0RnWURWUjBQQVFIL0JBUURBZ0tFTUIwR0ExVWRKUVFXCk1CUUdDQ3NHQVFVRkJ3TUJCZ2dyQmdFRkJRY0RBakFQQmdOVkhSTUJBZjhFQlRBREFRSC9NQjBHQTFVZERnUVcKQkJTV2NKNTBwNEdzZUdiQU1OWGdMRGpZbC93TjJ6QU5CZ2txaGtpRzl3MEJBUXNGQUFPQ0FRRUFxTEF0Y1UwdAo2bTdxK0NNQS9HdGtkaFg1YVA1MWpBNzBNRUtkb3ExZVl0VTRGblN2eHpRYlRlV1JOVUFxTjFranNBcUlFeUlMCjE5KzZYbDFOYXVFMUdqZE9vR0xDZjNYZENDUWNDN3lpYVRXaVN5Wlg5Y2M4UDRFQTM2b25oT0JHK2RtN2gvWG8KU1o2QjlHc0s1ZGdUempuZDNyU3RPUTlSQnFLdUpyajNMcHg3emlVcjI5b3ZDbTNabkxKam93S2ljYUpBTE13MQpMR1VES0E0SUdrMmszUlJ2OWU5NEk0Rm9VMFE1dWJ3SWNVN1hGQTV3Q1NORG5qWWM3RStLYTJrKzJIZnIyZXJCCmhjQWJLOGd4RjdzV2VBZHdaQ0JveGJtUkRPSTVpcmhla1lzNGtaYVp3T1p3akNQNGZ1L1ZZUGp3RjNnbXlEREwKOU9qOWt0SkM3NGttbnc9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==
+kind: Secret
+metadata:
+  creationTimestamp: "2026-08-24T22:43:22Z"
+  labels:
+    common.k8s.elastic.co/type: elasticsearch
+    eck.k8s.elastic.co/owner-kind: Elasticsearch
+    eck.k8s.elastic.co/owner-name: my-es
+    eck.k8s.elastic.co/owner-namespace: toy-infra
+    eck.k8s.elastic.co/watched: "true"
+    elasticsearch.k8s.elastic.co/cluster-name: my-es
+  name: my-es-es-http-certs-public
+  namespace: toy-infra
+  resourceVersion: "223823"
+  uid: 071e16c4-d6e4-4631-ae6a-0e9751365f26
+type: Opaque
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system$ kubectl get secret my-es-es-http-certs-public -n toy-infra -o yaml   | sed 's/namespace: toy-infra/namespace: toy-system/'   | grep -v '^\s*resourceVersion:\|^\s*uid:\|^\s*creationTimestamp:\|^\s*selfLink:'   | kubectl apply -f -
+secret/my-es-es-http-certs-public created
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system$ kubectl get secret my-es-es-http-certs-public -n toy-system
+Error from server (NotFound): secrets "my-es-es-http-certs-public" not found
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system$ kubectl get secret -n toy-system
+NAME                TYPE     DATA   AGE
+es-credentials      Opaque   2      2d23h
+jwt-secret          Opaque   1      2d23h
+mysql-credentials   Opaque   2      2d23h
+
+
+这个现象很反常——apply明确返回了created，但立刻查询却是NotFound，说明这个Secret被创建后又被别的东西自动删掉了。看一下yaml里那几个特殊的label，我怀疑是ECK Operator自己在"回收"它。
+
+中文：
+
+找到根因了——问题出在这几行label身上：
+
+yaml
+labels:
+  eck.k8s.elastic.co/owner-name: my-es
+  eck.k8s.elastic.co/owner-namespace: toy-infra
+  eck.k8s.elastic.co/watched: "true"
+
+ECK Operator是集群范围运行的(不局限于toy-infra这一个namespace)，它靠这几个label来判断"这个Secret归哪个Elasticsearch资源所有"——我们复制过去的这份，label上依然写着"我属于toy-infra里的my-es"，但它现在实际所在的namespace是toy-system。ECK Operator巡检时发现"这个Secret自称归属于我管理的资源，但它所在的位置跟它声称的owner关系对不上"，判定为"孤儿/不合规资源"，直接把它清理掉了——这也解释了为什么create成功后瞬间又消失。
+
+解决办法：复制的时候把这几个ECK专属的label也一并去掉
+
+不用label去伪装"这是ECK的东西"，把它变成一个完全独立、跟ECK毫无关系的普通Secret，这样ECK就不会再盯上它、也不会再去"清理"它。改进版命令：
+
+bash
+kubectl get secret my-es-es-http-certs-public -n toy-infra -o yaml \
+  | sed 's/namespace: toy-infra/namespace: toy-system/' \
+  | grep -v '^\s*resourceVersion:\|^\s*uid:\|^\s*creationTimestamp:\|^\s*selfLink:\|^\s*labels:\|eck\.k8s\.elastic\.co\|common\.k8s\.elastic\.co\|elasticsearch\.k8s\.elastic\.co' \
+  | kubectl apply -f -
+
+这次grep -v的过滤条件里，多加了几个匹配规则：labels:这一行本身，以及所有带eck.k8s.elastic.co、common.k8s.elastic.co、elasticsearch.k8s.elastic.co这几个前缀的label——把整个labels块连同它底下所有跟ECK相关的具体label行都清空，最终生成的yaml里完全不会出现metadata.labels这个字段，ECK Operator扫描资源时，靠这些特征label识别"这是不是我该管的东西"，找不到这些标记，就会当成一个跟自己毫无关系的普通Secret，不再触碰。
+
+验证
+bash
+kubectl get secret my-es-es-http-certs-public -n toy-system -o yaml
+
+这次不要立刻查一下就走，建议隔个10-20秒再查一次，确认它没有像上次那样又消失：
+
+bash
+sleep 20
+kubectl get secret my-es-es-http-certs-public -n toy-system
+
+确认这次稳定存在后，Pod应该会自动重试挂载成功(kubelet发现之前缺失的Secret出现了，会重新尝试MountVolume.SetUp这一步)，不需要重新applyDeployment，用kubectl get pods -n toy-system -w观察就行。
+
+
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system$ kubectl get pods -n toy-system -w
+NAME                                   READY   STATUS             RESTARTS      AGE
+notification-service-5b6759fdb-nhmfh   1/1     Running            2 (11m ago)   25h
+policy-service-67bc6564fc-5mjrk        1/1     Running            2 (11m ago)   24h
+search-service-54c856587-w57vm         0/1     CrashLoopBackOff   3 (8s ago)    24h
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system$ kubectl logs -f deployment/search-service -n toy-system
+Certificate was added to keystore
+
+  .   ____          _            __ _ _
+ /\\ / ___'_ __ _ _(_)_ __  __ _ \ \ \ \
+( ( )\___ | '_ | '_| | '_ \/ _` | \ \ \ \
+ \\/  ___)| |_)| | | | | || (_| |  ) ) ) )
+  '  |____| .__|_| |_|_| |_\__, | / / / /
+ =========|_|==============|___/=/_/_/_/
+
+ :: Spring Boot ::                (v3.3.5)
+
+2026-09-03T22:57:32.375Z  INFO 1 --- [search-service] [           main] c.t.search.SearchServiceApplication      : Starting SearchServiceApplication v0.1.0 using Java 21.0.12 with PID 1 (/app/app.jar started by root in /app)
+2026-09-03T22:57:32.378Z DEBUG 1 --- [search-service] [           main] c.t.search.SearchServiceApplication      : Running with Spring Boot v3.3.5, Spring v6.1.14
+2026-09-03T22:57:32.378Z  INFO 1 --- [search-service] [           main] c.t.search.SearchServiceApplication      : No active profile set, falling back to 1 default profile: "default"
+2026-09-03T22:57:33.345Z  INFO 1 --- [search-service] [           main] .s.d.r.c.RepositoryConfigurationDelegate : Bootstrapping Spring Data Elasticsearch repositories in DEFAULT mode.
+2026-09-03T22:57:33.398Z  INFO 1 --- [search-service] [           main] .s.d.r.c.RepositoryConfigurationDelegate : Finished Spring Data repository scanning in 48 ms. Found 1 Elasticsearch repository interface.
+2026-09-03T22:57:33.980Z  INFO 1 --- [search-service] [           main] o.s.b.w.embedded.tomcat.TomcatWebServer  : Tomcat initialized with port 8083 (http)
+2026-09-03T22:57:33.994Z  INFO 1 --- [search-service] [           main] o.apache.catalina.core.StandardService   : Starting service [Tomcat]
+2026-09-03T22:57:33.994Z  INFO 1 --- [search-service] [           main] o.apache.catalina.core.StandardEngine    : Starting Servlet engine: [Apache Tomcat/10.1.31]
+2026-09-03T22:57:34.026Z  INFO 1 --- [search-service] [           main] o.a.c.c.C.[Tomcat].[localhost].[/]       : Initializing Spring embedded WebApplicationContext
+2026-09-03T22:57:34.027Z  INFO 1 --- [search-service] [           main] w.s.c.ServletWebServerApplicationContext : Root WebApplicationContext: initialization completed in 1589 ms
+2026-09-03T22:57:35.132Z  WARN 1 --- [search-service] [           main] ConfigServletWebServerApplicationContext : Exception encountered during context initialization - cancelling refresh attempt: org.springframework.beans.factory.UnsatisfiedDependencyException: Error creating bean with name 'policyEventListener' defined in URL [jar:nested:/app/app.jar/!BOOT-INF/classes/!/com/toysystem/search/listener/PolicyEventListener.class]: Unsatisfied dependency expressed through constructor parameter 0: Error creating bean with name 'policyDocumentRepository' defined in com.toysystem.search.repository.PolicyDocumentRepository defined in @EnableElasticsearchRepositories declared on ElasticsearchRepositoriesRegistrar.EnableElasticsearchRepositoriesConfiguration: Failed to instantiate [org.springframework.data.elasticsearch.repository.support.SimpleElasticsearchRepository]: Constructor threw exception
+2026-09-03T22:57:35.136Z  INFO 1 --- [search-service] [           main] o.apache.catalina.core.StandardService   : Stopping service [Tomcat]
+2026-09-03T22:57:35.156Z  INFO 1 --- [search-service] [           main] .s.b.a.l.ConditionEvaluationReportLogger : 
+
+Error starting ApplicationContext. To display the condition evaluation report re-run your application with 'debug' enabled.
+2026-09-03T22:57:35.175Z ERROR 1 --- [search-service] [           main] o.s.boot.SpringApplication               : Application run failed
+
+org.springframework.beans.factory.UnsatisfiedDependencyException: Error creating bean with name 'policyEventListener' defined in URL [jar:nested:/app/app.jar/!BOOT-INF/classes/!/com/toysystem/search/listener/PolicyEventListener.class]: Unsatisfied dependency expressed through constructor parameter 0: Error creating bean with name 'policyDocumentRepository' defined in com.toysystem.search.repository.PolicyDocumentRepository defined in @EnableElasticsearchRepositories declared on ElasticsearchRepositoriesRegistrar.EnableElasticsearchRepositoriesConfiguration: Failed to instantiate [org.springframework.data.elasticsearch.repository.support.SimpleElasticsearchRepository]: Constructor threw exception
+        at org.springframework.beans.factory.support.ConstructorResolver.createArgumentArray(ConstructorResolver.java:795) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        at org.springframework.beans.factory.support.ConstructorResolver.autowireConstructor(ConstructorResolver.java:237) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.autowireConstructor(AbstractAutowireCapableBeanFactory.java:1375) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBeanInstance(AbstractAutowireCapableBeanFactory.java:1212) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.doCreateBean(AbstractAutowireCapableBeanFactory.java:562) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBean(AbstractAutowireCapableBeanFactory.java:522) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        at org.springframework.beans.factory.support.AbstractBeanFactory.lambda$doGetBean$0(AbstractBeanFactory.java:337) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        at org.springframework.beans.factory.support.DefaultSingletonBeanRegistry.getSingleton(DefaultSingletonBeanRegistry.java:234) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        at org.springframework.beans.factory.support.AbstractBeanFactory.doGetBean(AbstractBeanFactory.java:335) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:200) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        at org.springframework.beans.factory.support.DefaultListableBeanFactory.preInstantiateSingletons(DefaultListableBeanFactory.java:975) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        at org.springframework.context.support.AbstractApplicationContext.finishBeanFactoryInitialization(AbstractApplicationContext.java:971) ~[spring-context-6.1.14.jar!/:6.1.14]
+        at org.springframework.context.support.AbstractApplicationContext.refresh(AbstractApplicationContext.java:625) ~[spring-context-6.1.14.jar!/:6.1.14]
+        at org.springframework.boot.web.servlet.context.ServletWebServerApplicationContext.refresh(ServletWebServerApplicationContext.java:146) ~[spring-boot-3.3.5.jar!/:3.3.5]
+        at org.springframework.boot.SpringApplication.refresh(SpringApplication.java:754) ~[spring-boot-3.3.5.jar!/:3.3.5]
+        at org.springframework.boot.SpringApplication.refreshContext(SpringApplication.java:456) ~[spring-boot-3.3.5.jar!/:3.3.5]
+        at org.springframework.boot.SpringApplication.run(SpringApplication.java:335) ~[spring-boot-3.3.5.jar!/:3.3.5]
+        at org.springframework.boot.SpringApplication.run(SpringApplication.java:1363) ~[spring-boot-3.3.5.jar!/:3.3.5]
+        at org.springframework.boot.SpringApplication.run(SpringApplication.java:1352) ~[spring-boot-3.3.5.jar!/:3.3.5]
+        at com.toysystem.search.SearchServiceApplication.main(SearchServiceApplication.java:9) ~[!/:0.1.0]
+        at java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(Unknown Source) ~[na:na]
+        at java.base/java.lang.reflect.Method.invoke(Unknown Source) ~[na:na]
+        at org.springframework.boot.loader.launch.Launcher.launch(Launcher.java:102) ~[app.jar:0.1.0]
+        at org.springframework.boot.loader.launch.Launcher.launch(Launcher.java:64) ~[app.jar:0.1.0]
+        at org.springframework.boot.loader.launch.JarLauncher.main(JarLauncher.java:40) ~[app.jar:0.1.0]
+Caused by: org.springframework.beans.factory.BeanCreationException: Error creating bean with name 'policyDocumentRepository' defined in com.toysystem.search.repository.PolicyDocumentRepository defined in @EnableElasticsearchRepositories declared on ElasticsearchRepositoriesRegistrar.EnableElasticsearchRepositoriesConfiguration: Failed to instantiate [org.springframework.data.elasticsearch.repository.support.SimpleElasticsearchRepository]: Constructor threw exception
+        at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.initializeBean(AbstractAutowireCapableBeanFactory.java:1806) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.doCreateBean(AbstractAutowireCapableBeanFactory.java:600) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBean(AbstractAutowireCapableBeanFactory.java:522) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        at org.springframework.beans.factory.support.AbstractBeanFactory.lambda$doGetBean$0(AbstractBeanFactory.java:337) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        at org.springframework.beans.factory.support.DefaultSingletonBeanRegistry.getSingleton(DefaultSingletonBeanRegistry.java:234) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        at org.springframework.beans.factory.support.AbstractBeanFactory.doGetBean(AbstractBeanFactory.java:335) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:200) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        at org.springframework.beans.factory.config.DependencyDescriptor.resolveCandidate(DependencyDescriptor.java:254) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        at org.springframework.beans.factory.support.DefaultListableBeanFactory.doResolveDependency(DefaultListableBeanFactory.java:1443) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        at org.springframework.beans.factory.support.DefaultListableBeanFactory.resolveDependency(DefaultListableBeanFactory.java:1353) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        at org.springframework.beans.factory.support.ConstructorResolver.resolveAutowiredArgument(ConstructorResolver.java:904) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        at org.springframework.beans.factory.support.ConstructorResolver.createArgumentArray(ConstructorResolver.java:782) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        ... 24 common frames omitted
+Caused by: org.springframework.beans.BeanInstantiationException: Failed to instantiate [org.springframework.data.elasticsearch.repository.support.SimpleElasticsearchRepository]: Constructor threw exception
+        at org.springframework.beans.BeanUtils.instantiateClass(BeanUtils.java:221) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        at org.springframework.data.repository.core.support.RepositoryFactorySupport.lambda$instantiateClass$5(RepositoryFactorySupport.java:571) ~[spring-data-commons-3.3.5.jar!/:3.3.5]
+        at java.base/java.util.Optional.map(Unknown Source) ~[na:na]
+        at org.springframework.data.repository.core.support.RepositoryFactorySupport.instantiateClass(RepositoryFactorySupport.java:571) ~[spring-data-commons-3.3.5.jar!/:3.3.5]
+        at org.springframework.data.repository.core.support.RepositoryFactorySupport.getTargetRepositoryViaReflection(RepositoryFactorySupport.java:536) ~[spring-data-commons-3.3.5.jar!/:3.3.5]
+        at org.springframework.data.elasticsearch.repository.support.ElasticsearchRepositoryFactory.getTargetRepository(ElasticsearchRepositoryFactory.java:80) ~[spring-data-elasticsearch-5.3.5.jar!/:5.3.5]
+        at org.springframework.data.repository.core.support.RepositoryFactorySupport.getRepository(RepositoryFactorySupport.java:317) ~[spring-data-commons-3.3.5.jar!/:3.3.5]
+        at org.springframework.data.repository.core.support.RepositoryFactoryBeanSupport.lambda$afterPropertiesSet$5(RepositoryFactoryBeanSupport.java:290) ~[spring-data-commons-3.3.5.jar!/:3.3.5]
+        at org.springframework.data.util.Lazy.getNullable(Lazy.java:135) ~[spring-data-commons-3.3.5.jar!/:3.3.5]
+        at org.springframework.data.util.Lazy.get(Lazy.java:113) ~[spring-data-commons-3.3.5.jar!/:3.3.5]
+        at org.springframework.data.repository.core.support.RepositoryFactoryBeanSupport.afterPropertiesSet(RepositoryFactoryBeanSupport.java:296) ~[spring-data-commons-3.3.5.jar!/:3.3.5]
+        at org.springframework.data.elasticsearch.repository.support.ElasticsearchRepositoryFactoryBean.afterPropertiesSet(ElasticsearchRepositoryFactoryBean.java:69) ~[spring-data-elasticsearch-5.3.5.jar!/:5.3.5]
+        at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.invokeInitMethods(AbstractAutowireCapableBeanFactory.java:1853) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.initializeBean(AbstractAutowireCapableBeanFactory.java:1802) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        ... 35 common frames omitted
+Caused by: org.springframework.dao.DataAccessResourceFailureException: Host name 'my-es-es-http.toy-infra.svc.cluster.local' does not match the certificate subject provided by the peer (CN=my-es-es-http.toy-infra.es.local, OU=my-es)
+        at org.springframework.data.elasticsearch.client.elc.ElasticsearchExceptionTranslator.translateExceptionIfPossible(ElasticsearchExceptionTranslator.java:111) ~[spring-data-elasticsearch-5.3.5.jar!/:5.3.5]
+        at org.springframework.data.elasticsearch.client.elc.ElasticsearchExceptionTranslator.translateException(ElasticsearchExceptionTranslator.java:65) ~[spring-data-elasticsearch-5.3.5.jar!/:5.3.5]
+        at org.springframework.data.elasticsearch.client.elc.ChildTemplate.execute(ChildTemplate.java:73) ~[spring-data-elasticsearch-5.3.5.jar!/:5.3.5]
+        at org.springframework.data.elasticsearch.client.elc.IndicesTemplate.doExists(IndicesTemplate.java:177) ~[spring-data-elasticsearch-5.3.5.jar!/:5.3.5]
+        at org.springframework.data.elasticsearch.client.elc.IndicesTemplate.exists(IndicesTemplate.java:169) ~[spring-data-elasticsearch-5.3.5.jar!/:5.3.5]
+        at org.springframework.data.elasticsearch.repository.support.SimpleElasticsearchRepository.createIndexAndMappingIfNeeded(SimpleElasticsearchRepository.java:93) ~[spring-data-elasticsearch-5.3.5.jar!/:5.3.5]
+        at org.springframework.data.elasticsearch.repository.support.SimpleElasticsearchRepository.<init>(SimpleElasticsearchRepository.java:87) ~[spring-data-elasticsearch-5.3.5.jar!/:5.3.5]
+        at java.base/jdk.internal.reflect.DirectConstructorHandleAccessor.newInstance(Unknown Source) ~[na:na]
+        at java.base/java.lang.reflect.Constructor.newInstanceWithCaller(Unknown Source) ~[na:na]
+        at java.base/java.lang.reflect.Constructor.newInstance(Unknown Source) ~[na:na]
+        at org.springframework.beans.BeanUtils.instantiateClass(BeanUtils.java:208) ~[spring-beans-6.1.14.jar!/:6.1.14]
+        ... 48 common frames omitted
+Caused by: java.lang.RuntimeException: Host name 'my-es-es-http.toy-infra.svc.cluster.local' does not match the certificate subject provided by the peer (CN=my-es-es-http.toy-infra.es.local, OU=my-es)
+        at org.springframework.data.elasticsearch.client.elc.ElasticsearchExceptionTranslator.translateException(ElasticsearchExceptionTranslator.java:64) ~[spring-data-elasticsearch-5.3.5.jar!/:5.3.5]
+        ... 57 common frames omitted
+Caused by: java.io.IOException: Host name 'my-es-es-http.toy-infra.svc.cluster.local' does not match the certificate subject provided by the peer (CN=my-es-es-http.toy-infra.es.local, OU=my-es)
+        at org.elasticsearch.client.RestClient.extractAndWrapCause(RestClient.java:939) ~[elasticsearch-rest-client-8.13.4.jar!/:8.13.4]
+        at org.elasticsearch.client.RestClient.performRequest(RestClient.java:304) ~[elasticsearch-rest-client-8.13.4.jar!/:8.13.4]
+        at org.elasticsearch.client.RestClient.performRequest(RestClient.java:292) ~[elasticsearch-rest-client-8.13.4.jar!/:8.13.4]
+        at co.elastic.clients.transport.rest_client.RestClientHttpClient.performRequest(RestClientHttpClient.java:91) ~[elasticsearch-java-8.13.4.jar!/:na]
+        at co.elastic.clients.transport.ElasticsearchTransportBase.performRequest(ElasticsearchTransportBase.java:144) ~[elasticsearch-java-8.13.4.jar!/:na]
+        at co.elastic.clients.elasticsearch.indices.ElasticsearchIndicesClient.exists(ElasticsearchIndicesClient.java:666) ~[elasticsearch-java-8.13.4.jar!/:na]
+        at org.springframework.data.elasticsearch.client.elc.IndicesTemplate.lambda$doExists$2(IndicesTemplate.java:177) ~[spring-data-elasticsearch-5.3.5.jar!/:5.3.5]
+        at org.springframework.data.elasticsearch.client.elc.ChildTemplate.execute(ChildTemplate.java:71) ~[spring-data-elasticsearch-5.3.5.jar!/:5.3.5]
+        ... 56 common frames omitted
+Caused by: javax.net.ssl.SSLPeerUnverifiedException: Host name 'my-es-es-http.toy-infra.svc.cluster.local' does not match the certificate subject provided by the peer (CN=my-es-es-http.toy-infra.es.local, OU=my-es)
+        at org.apache.http.nio.conn.ssl.SSLIOSessionStrategy.verifySession(SSLIOSessionStrategy.java:217) ~[httpasyncclient-4.1.5.jar!/:4.1.5]
+        at org.apache.http.nio.conn.ssl.SSLIOSessionStrategy$1.verify(SSLIOSessionStrategy.java:197) ~[httpasyncclient-4.1.5.jar!/:4.1.5]
+        at org.apache.http.nio.reactor.ssl.SSLIOSession.doHandshake(SSLIOSession.java:373) ~[httpcore-nio-4.4.16.jar!/:4.4.16]
+        at org.apache.http.nio.reactor.ssl.SSLIOSession.outboundTransport(SSLIOSession.java:594) ~[httpcore-nio-4.4.16.jar!/:4.4.16]
+        at org.apache.http.impl.nio.reactor.AbstractIODispatch.outputReady(AbstractIODispatch.java:154) ~[httpcore-nio-4.4.16.jar!/:4.4.16]
+        at org.apache.http.impl.nio.reactor.BaseIOReactor.writable(BaseIOReactor.java:187) ~[httpcore-nio-4.4.16.jar!/:4.4.16]
+        at org.apache.http.impl.nio.reactor.AbstractIOReactor.processEvent(AbstractIOReactor.java:341) ~[httpcore-nio-4.4.16.jar!/:4.4.16]
+        at org.apache.http.impl.nio.reactor.AbstractIOReactor.processEvents(AbstractIOReactor.java:315) ~[httpcore-nio-4.4.16.jar!/:4.4.16]
+        at org.apache.http.impl.nio.reactor.AbstractIOReactor.execute(AbstractIOReactor.java:276) ~[httpcore-nio-4.4.16.jar!/:4.4.16]
+        at org.apache.http.impl.nio.reactor.BaseIOReactor.execute(BaseIOReactor.java:104) ~[httpcore-nio-4.4.16.jar!/:4.4.16]
+        at org.apache.http.impl.nio.reactor.AbstractMultiworkerIOReactor$Worker.run(AbstractMultiworkerIOReactor.java:591) ~[httpcore-nio-4.4.16.jar!/:4.4.16]
+        at java.base/java.lang.Thread.run(Unknown Source) ~[na:na]
+
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system$ kubectl describe pod search-service-54c856587-w57vm -n toy-system
+Name:             search-service-54c856587-w57vm
+Namespace:        toy-system
+Priority:         0
+Service Account:  default
+Node:             ziqiao-asm100/192.168.40.23
+Start Time:       Thu, 03 Sep 2026 07:56:27 +0900
+Labels:           app=search-service
+                  pod-template-hash=54c856587
+Annotations:      <none>
+Status:           Running
+IP:               10.42.0.149
+IPs:
+  IP:           10.42.0.149
+Controlled By:  ReplicaSet/search-service-54c856587
+Containers:
+  search-service:
+    Container ID:   containerd://0db9f1d97e0632e0e42da34fba6fcb5a910e6e94ef852146a3f5500feee2fca4
+    Image:          localhost:5000/search-service:202609020807-3805cc8
+    Image ID:       localhost:5000/search-service@sha256:6f444150dbc6dbb50c2597a47b78ab574fbfa9ac6af7606928ec4685b488c41b
+    Port:           8083/TCP
+    Host Port:      0/TCP
+    State:          Waiting
+      Reason:       CrashLoopBackOff
+    Last State:     Terminated
+      Reason:       Error
+      Exit Code:    1
+      Started:      Fri, 04 Sep 2026 07:58:17 +0900
+      Finished:     Fri, 04 Sep 2026 07:58:22 +0900
+    Ready:          False
+    Restart Count:  4
+    Liveness:       http-get http://:8083/actuator/health delay=40s timeout=1s period=20s #success=1 #failure=3
+    Readiness:      http-get http://:8083/actuator/health delay=20s timeout=1s period=10s #success=1 #failure=3
+    Environment Variables from:
+      shared-config  ConfigMap  Optional: false
+    Environment:
+      SPRING_ELASTICSEARCH_USERNAME:  <set to the key 'ELASTICSEARCH_USERNAME' in secret 'es-credentials'>  Optional: false
+      SPRING_ELASTICSEARCH_PASSWORD:  <set to the key 'ELASTICSEARCH_PASSWORD' in secret 'es-credentials'>  Optional: false
+      SERVER_PORT:                    8083
+    Mounts:
+      /certs from es-ca-cert (ro)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-lfh4t (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  es-ca-cert:
+    Type:        Secret (a volume populated by a Secret)
+    SecretName:  my-es-es-http-certs-public
+    Optional:    false
+  kube-api-access-lfh4t:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:
+  Type     Reason       Age                   From               Message
+  ----     ------       ----                  ----               -------
+  Normal   Scheduled    24h                   default-scheduler  Successfully assigned toy-system/search-service-54c856587-w57vm to ziqiao-asm100
+  Warning  FailedMount  23h (x10 over 24h)    kubelet            MountVolume.SetUp failed for volume "es-ca-cert" : secret "my-es-es-http-certs-public" not found
+  Warning  FailedMount  4m55s (x13 over 15m)  kubelet            MountVolume.SetUp failed for volume "es-ca-cert" : secret "my-es-es-http-certs-public" not found
+  Normal   Pulling      2m53s                 kubelet            spec.containers{search-service}: Pulling image "localhost:5000/search-service:202609020807-3805cc8"
+  Normal   Pulled       2m52s                 kubelet            spec.containers{search-service}: Successfully pulled image "localhost:5000/search-service:202609020807-3805cc8" in 993ms (993ms including waiting). Image size: 168702608 bytes.
+  Normal   Created      74s (x5 over 2m52s)   kubelet            spec.containers{search-service}: Container created
+  Normal   Started      74s (x5 over 2m51s)   kubelet            spec.containers{search-service}: Container started
+  Normal   Pulled       74s (x4 over 2m46s)   kubelet            spec.containers{search-service}: Container image "localhost:5000/search-service:202609020807-3805cc8" already present on machine and can be accessed by the pod
+  Warning  BackOff      53s (x8 over 2m41s)   kubelet            spec.containers{search-service}: Back-off restarting failed container search-service in pod search-service-54c856587-w57vm_toy-system(7ed79a1a-e9eb-412d-b0c7-3800b8b07010)
+
+
+
+  这个错误比证书信任问题更进了一步——信任链本身已经建立成功(没有"证书不可信"的报错了，Certificate was added to keystore证明truststore生效)，现在卡在主机名校验这一步：客户端连的是my-es-es-http.toy-infra.svc.cluster.local，但证书上登记的名字跟这个不完全匹配。让我先解码一下证书本身，看看它实际登记了哪些合法主机名，而不是猜。
+
+中文：
+
+解码证书后，问题的真相完全清楚了——证书本身登记的合法主机名列表(SAN)里，压根没有my-es-es-http.toy-infra.svc.cluster.local这个完整形式，只有这几种：
+
+my-es-es-http.toy-infra.es.local
+my-es-es-http
+my-es-es-http.toy-infra.svc      ← 这个能用
+my-es-es-http.toy-infra
+my-es-es-internal-http.toy-infra.svc
+my-es-es-internal-http.toy-infra
+*.my-es-es-default.toy-infra.svc
+
+我们之前shared-config这个ConfigMap里给ELASTICSEARCH_URIS填的是"完整形式"(带.svc.cluster.local后缀)，这个具体字符串没有被ECK预先"授权"进证书里，所以证书信任成功了(CA对了)，但"你是不是我认识的那台机器"这一步核对失败。
+
+为什么my-es-es-http.toy-infra.svc这个短形式反而能用——涉及K8s DNS的"搜索域"机制
+
+这一点值得展开讲一下，因为不直观：Pod内部的DNS配置(还记得我们很早之前查过的/etc/resolv.conf吗)，有一份"搜索域列表"，大致是：
+
+search toy-system.svc.cluster.local svc.cluster.local cluster.local
+
+当你请求解析my-es-es-http.toy-infra.svc这个"不完整"的名字时(它的"点"数量比较少，触发了K8s DNS的搜索域展开逻辑)，操作系统会依次尝试拼接每个搜索域后缀，其中一次尝试是拼上cluster.local——得到my-es-es-http.toy-infra.svc.cluster.local，这正是真实的Service DNS记录，能成功解析到正确的ClusterIP。这也是ECK特意在证书SAN里只登记这个"短形式"的原因——它期望使用者用这种写法跨namespace访问，既能通过DNS搜索域正确解析，又精确匹配证书里登记的名字。
+
+修复：把shared-config里的ELASTICSEARCH_URIS改成这个短形式
+
+中文：
+
+bash
+kubectl get configmap shared-config -n toy-system -o yaml
+
+先看一眼当前内容，确认version后再编辑(如果你有它的当前yaml，直接改这一行也行)：
+
+bash
+kubectl edit configmap shared-config -n toy-system
+
+把ELASTICSEARCH_URIS这一行的值，从
+
+https://my-es-es-http.toy-infra.svc.cluster.local:9200
+
+改成
+
+https://my-es-es-http.toy-infra.svc:9200
+
+保存退出后，需要手动重启search-service这个Deployment，让它重新读取更新后的ConfigMap——ConfigMap的值不会自动"热推送"进已经在跑的Pod里，环境变量只在容器启动那一刻被注入一次：
+
+bash
+kubectl rollout restart deployment/search-service -n toy-system
+kubectl logs -f deployment/search-service -n toy-system
+顺带确认一件事：这个改动理论上不会影响policy-service，但值得留意
+
+policy-service的application.yml里没有直接连ES(它只是往Kafka发消息，是search-service自己去消费再写ES)，所以这次修改只影响search-service，不需要重启其他服务——但既然ELASTICSEARCH_URIS是放在共享ConfigMap里，以后如果新增别的服务也要连ES，记得沿用这个"短形式"写法，不要凭直觉写回"完整形式"，不然会重新踩这个坑。
+
+跑完贴日志，确认这次SSL握手和主机名校验都通过。
+
+
