@@ -1755,3 +1755,469 @@ policy-service的application.yml里没有直接连ES(它只是往Kafka发消息�
 跑完贴日志，确认这次SSL握手和主机名校验都通过。
 
 
+
+这个允许的host列表，解析的哪个字段？反base64吗？
+
+
+问得很细，这里其实有两层编码/解析，容易被当成同一件事，值得拆开讲清楚。
+
+第一层：base64 -d——还原的是"Secret的data字段"，得到的是PEM格式文本，还不是"证书本身"
+
+回顾我们之前贴出来的那份tls.crt的值，是一大串Base64字符——这是K8s Secret存储机制加的外层编码(还记得我们最早讲过"Secret是Base64、不是加密")。base64 -d这一步只是把这层K8s自己加的编码剥掉，还原出来的东西是：
+
+-----BEGIN CERTIFICATE-----
+MIIEHzCCAweg...(一大坨Base64字符)...
+-----END CERTIFICATE-----
+
+这就是所谓的PEM格式——注意PEM格式本身，内容还是一段Base64(只是这次是证书标准格式自带的编码，不是K8s加的)，BEGIN CERTIFICATE/END CERTIFICATE这两行是分隔符，中间那坨才是真正的证书数据，但依然是编码过的状态，肉眼看不出SAN、CN这些具体字段。
+
+第二层：openssl x509 -text——真正"解析"证书结构的是这一步，不是base64解码
+
+X.509证书(SSL/TLS证书的标准格式)，底层是用一种叫ASN.1/DER的二进制编码规则组织的，里面按照固定的结构定义了"哪一段字节代表颁发者(Issuer)、哪一段代表有效期、哪一段代表SAN扩展字段"等等——openssl x509 -in cert.pem -noout -text这条命令做的事情是：
+
+先把PEM里那层Base64解开，还原出原始的DER二进制数据
+按照X.509标准的结构定义，把这段二进制数据"翻译"成人类能读的文本，这一步涉及理解整个证书格式规范，不是简单的编码转换
+
+-noout的意思是"不要重新打印证书本身(默认它还会把证书原文再打印一遍)"，-text是"把证书内容转成人类可读的文本形式"。grep -A5 "Subject Alternative Name"只是在这份已经被openssl翻译成文本的完整内容里，定位到"Subject Alternative Name"这一行，并多打印它后面5行(因为SAN列表内容通常紧跟在这行标题后面)。
+
+一句话区分两层的本质差异
+base64 -d——纯粹的编码转换，是可逆的、无损的"翻译"，不需要理解内容语义，任何工具都能做(不需要知道这是不是证书)
+openssl x509 -text——真正的结构化解析，需要"看懂"X.509这个格式规范定义了哪些字段、字段的含义是什么，才能提取出SAN、CN、有效期这类具体信息，这不是简单的编码转换能做到的
+
+所以准确地说：我们只对"Secret的data字段"做了base64解码(还原出PEM文本)，而PEM文本本身包着的证书内容，是靠openssl这个专门理解X.509格式的工具，做了真正的结构化解析，才拿到了SAN那个字段的值——不是"反base64就能看到SAN"，base64只是拆掉了最外层的包装纸，真正的"读懂内容"这一步，靠的是openssl对证书格式的解析能力。
+
+
+
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/infra/k8s/toy-system/configmap$ kubectl apply -f shared-configmap.yaml
+configmap/shared-config configured
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/infra/k8s/toy-system/configmap$ kubectl get configmap shared-config -n toy-system -o yaml
+apiVersion: v1
+data:
+  ELASTICSEARCH_URIS: https://my-es-es-http.toy-infra.svc:9200
+  KAFKA_BOOTSTRAP_SERVERS: my-kafka-kafka-bootstrap.toy-infra.svc.cluster.local:9092
+  SPRING_DATASOURCE_URL: jdbc:mysql://mysql.toy-infra.svc.cluster.local:3306/toy_policy_db?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+  SPRING_REDIS_HOST: redis.toy-infra.svc.cluster.local
+  SPRING_REDIS_PORT: "6379"
+kind: ConfigMap
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","data":{"ELASTICSEARCH_URIS":"https://my-es-es-http.toy-infra.svc:9200","KAFKA_BOOTSTRAP_SERVERS":"my-kafka-kafka-bootstrap.toy-infra.svc.cluster.local:9092","SPRING_DATASOURCE_URL":"jdbc:mysql://mysql.toy-infra.svc.cluster.local:3306/toy_policy_db?useSSL=false\u0026allowPublicKeyRetrieval=true\u0026serverTimezone=UTC","SPRING_REDIS_HOST":"redis.toy-infra.svc.cluster.local","SPRING_REDIS_PORT":"6379"},"kind":"ConfigMap","metadata":{"annotations":{},"name":"shared-config","namespace":"toy-system"}}
+  creationTimestamp: "2026-08-31T23:31:29Z"
+  name: shared-config
+  namespace: toy-system
+  resourceVersion: "303432"
+  uid: 9019d7ef-c28d-4f4b-aa19-53a15a5a4472
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/infra/k8s/toy-system/configmap$ kubectl rollout restart deployment/search-service -n toy-system
+deployment.apps/search-service restarted
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/infra/k8s/toy-system/configmap$ kubectl describe pod search-service-54c856587-w57vm -n toy-system
+Name:             search-service-54c856587-w57vm
+Namespace:        toy-system
+Priority:         0
+Service Account:  default
+Node:             ziqiao-asm100/192.168.40.23
+Start Time:       Thu, 03 Sep 2026 07:56:27 +0900
+Labels:           app=search-service
+                  pod-template-hash=54c856587
+Annotations:      <none>
+Status:           Running
+IP:               10.42.0.149
+IPs:
+  IP:           10.42.0.149
+Controlled By:  ReplicaSet/search-service-54c856587
+Containers:
+  search-service:
+    Container ID:   containerd://8ccdacf1b7b7ddb329b89d4b4b95520d1655b0991b6cff39d21c40b600df393d
+    Image:          localhost:5000/search-service:202609020807-3805cc8
+    Image ID:       localhost:5000/search-service@sha256:6f444150dbc6dbb50c2597a47b78ab574fbfa9ac6af7606928ec4685b488c41b
+    Port:           8083/TCP
+    Host Port:      0/TCP
+    State:          Waiting
+      Reason:       CrashLoopBackOff
+    Last State:     Terminated
+      Reason:       Error
+      Exit Code:    1
+      Started:      Fri, 04 Sep 2026 08:13:12 +0900
+      Finished:     Fri, 04 Sep 2026 08:13:17 +0900
+    Ready:          False
+    Restart Count:  8
+    Liveness:       http-get http://:8083/actuator/health delay=40s timeout=1s period=20s #success=1 #failure=3
+    Readiness:      http-get http://:8083/actuator/health delay=20s timeout=1s period=10s #success=1 #failure=3
+    Environment Variables from:
+      shared-config  ConfigMap  Optional: false
+    Environment:
+      SPRING_ELASTICSEARCH_USERNAME:  <set to the key 'ELASTICSEARCH_USERNAME' in secret 'es-credentials'>  Optional: false
+      SPRING_ELASTICSEARCH_PASSWORD:  <set to the key 'ELASTICSEARCH_PASSWORD' in secret 'es-credentials'>  Optional: false
+      SERVER_PORT:                    8083
+    Mounts:
+      /certs from es-ca-cert (ro)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-lfh4t (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       False 
+  ContainersReady             False 
+  PodScheduled                True 
+Volumes:
+  es-ca-cert:
+    Type:        Secret (a volume populated by a Secret)
+    SecretName:  my-es-es-http-certs-public
+    Optional:    false
+  kube-api-access-lfh4t:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:
+  Type     Reason       Age                 From               Message
+  ----     ------       ----                ----               -------
+  Normal   Scheduled    24h                 default-scheduler  Successfully assigned toy-system/search-service-54c856587-w57vm to ziqiao-asm100
+  Warning  FailedMount  24h (x10 over 24h)  kubelet            MountVolume.SetUp failed for volume "es-ca-cert" : secret "my-es-es-http-certs-public" not found
+  Warning  FailedMount  20m (x13 over 30m)  kubelet            MountVolume.SetUp failed for volume "es-ca-cert" : secret "my-es-es-http-certs-public" not found
+  Normal   Pulling      18m                 kubelet            spec.containers{search-service}: Pulling image "localhost:5000/search-service:202609020807-3805cc8"
+  Normal   Pulled       18m                 kubelet            spec.containers{search-service}: Successfully pulled image "localhost:5000/search-service:202609020807-3805cc8" in 993ms (993ms including waiting). Image size: 168702608 bytes.
+  Normal   Created      95s (x9 over 18m)   kubelet            spec.containers{search-service}: Container created
+  Normal   Started      95s (x9 over 18m)   kubelet            spec.containers{search-service}: Container started
+  Normal   Pulled       95s (x8 over 18m)   kubelet            spec.containers{search-service}: Container image "localhost:5000/search-service:202609020807-3805cc8" already present on machine and can be accessed by the pod
+  Warning  BackOff      18s (x25 over 17m)  kubelet            spec.containers{search-service}: Back-off restarting failed container search-service in pod search-service-54c856587-w57vm_toy-system(7ed79a1a-e9eb-412d-b0c7-3800b8b07010)
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/infra/k8s/toy-system/configmap$ kubectl logs -f deployment/search-service -n toy-system
+Certificate was added to keystore
+
+  .   ____          _            __ _ _
+ /\\ / ___'_ __ _ _(_)_ __  __ _ \ \ \ \
+( ( )\___ | '_ | '_| | '_ \/ _` | \ \ \ \
+ \\/  ___)| |_)| | | | | || (_| |  ) ) ) )
+  '  |____| .__|_| |_|_| |_\__, | / / / /
+ =========|_|==============|___/=/_/_/_/
+
+ :: Spring Boot ::                (v3.3.5)
+
+2026-09-03T23:14:28.214Z  INFO 1 --- [search-service] [           main] c.t.search.SearchServiceApplication      : Starting SearchServiceApplication v0.1.0 using Java 21.0.12 with PID 1 (/app/app.jar started by root in /app)
+2026-09-03T23:14:28.216Z DEBUG 1 --- [search-service] [           main] c.t.search.SearchServiceApplication      : Running with Spring Boot v3.3.5, Spring v6.1.14
+2026-09-03T23:14:28.217Z  INFO 1 --- [search-service] [           main] c.t.search.SearchServiceApplication      : No active profile set, falling back to 1 default profile: "default"
+2026-09-03T23:14:29.226Z  INFO 1 --- [search-service] [           main] .s.d.r.c.RepositoryConfigurationDelegate : Bootstrapping Spring Data Elasticsearch repositories in DEFAULT mode.
+2026-09-03T23:14:29.279Z  INFO 1 --- [search-service] [           main] .s.d.r.c.RepositoryConfigurationDelegate : Finished Spring Data repository scanning in 48 ms. Found 1 Elasticsearch repository interface.
+2026-09-03T23:14:29.792Z  INFO 1 --- [search-service] [           main] o.s.b.w.embedded.tomcat.TomcatWebServer  : Tomcat initialized with port 8083 (http)
+2026-09-03T23:14:29.805Z  INFO 1 --- [search-service] [           main] o.apache.catalina.core.StandardService   : Starting service [Tomcat]
+2026-09-03T23:14:29.805Z  INFO 1 --- [search-service] [           main] o.apache.catalina.core.StandardEngine    : Starting Servlet engine: [Apache Tomcat/10.1.31]
+2026-09-03T23:14:29.836Z  INFO 1 --- [search-service] [           main] o.a.c.c.C.[Tomcat].[localhost].[/]       : Initializing Spring embedded WebApplicationContext
+2026-09-03T23:14:29.837Z  INFO 1 --- [search-service] [           main] w.s.c.ServletWebServerApplicationContext : Root WebApplicationContext: initialization completed in 1562 ms
+2026-09-03T23:14:32.178Z  INFO 1 --- [search-service] [           main] o.s.b.a.e.web.EndpointLinksResolver      : Exposing 2 endpoints beneath base path '/actuator'
+2026-09-03T23:14:32.299Z  INFO 1 --- [search-service] [           main] o.a.k.clients.admin.AdminClientConfig    : AdminClientConfig values: 
+        auto.include.jmx.reporter = true
+        bootstrap.controllers = []
+        bootstrap.servers = [my-kafka-kafka-bootstrap.toy-infra.svc.cluster.local:9092]
+        client.dns.lookup = use_all_dns_ips
+        client.id = search-service-admin-0
+        connections.max.idle.ms = 300000
+        default.api.timeout.ms = 60000
+        enable.metrics.push = true
+        metadata.max.age.ms = 300000
+        metric.reporters = []
+        metrics.num.samples = 2
+        metrics.recording.level = INFO
+        metrics.sample.window.ms = 30000
+        receive.buffer.bytes = 65536
+        reconnect.backoff.max.ms = 1000
+        reconnect.backoff.ms = 50
+        request.timeout.ms = 30000
+        retries = 2147483647
+        retry.backoff.max.ms = 1000
+        retry.backoff.ms = 100
+        sasl.client.callback.handler.class = null
+        sasl.jaas.config = null
+        sasl.kerberos.kinit.cmd = /usr/bin/kinit
+        sasl.kerberos.min.time.before.relogin = 60000
+        sasl.kerberos.service.name = null
+        sasl.kerberos.ticket.renew.jitter = 0.05
+        sasl.kerberos.ticket.renew.window.factor = 0.8
+        sasl.login.callback.handler.class = null
+        sasl.login.class = null
+        sasl.login.connect.timeout.ms = null
+        sasl.login.read.timeout.ms = null
+        sasl.login.refresh.buffer.seconds = 300
+        sasl.login.refresh.min.period.seconds = 60
+        sasl.login.refresh.window.factor = 0.8
+        sasl.login.refresh.window.jitter = 0.05
+        sasl.login.retry.backoff.max.ms = 10000
+        sasl.login.retry.backoff.ms = 100
+        sasl.mechanism = GSSAPI
+        sasl.oauthbearer.clock.skew.seconds = 30
+        sasl.oauthbearer.expected.audience = null
+        sasl.oauthbearer.expected.issuer = null
+        sasl.oauthbearer.jwks.endpoint.refresh.ms = 3600000
+        sasl.oauthbearer.jwks.endpoint.retry.backoff.max.ms = 10000
+        sasl.oauthbearer.jwks.endpoint.retry.backoff.ms = 100
+        sasl.oauthbearer.jwks.endpoint.url = null
+        sasl.oauthbearer.scope.claim.name = scope
+        sasl.oauthbearer.sub.claim.name = sub
+        sasl.oauthbearer.token.endpoint.url = null
+        security.protocol = PLAINTEXT
+        security.providers = null
+        send.buffer.bytes = 131072
+        socket.connection.setup.timeout.max.ms = 30000
+        socket.connection.setup.timeout.ms = 10000
+        ssl.cipher.suites = null
+        ssl.enabled.protocols = [TLSv1.2, TLSv1.3]
+        ssl.endpoint.identification.algorithm = https
+        ssl.engine.factory.class = null
+        ssl.key.password = null
+        ssl.keymanager.algorithm = SunX509
+        ssl.keystore.certificate.chain = null
+        ssl.keystore.key = null
+        ssl.keystore.location = null
+        ssl.keystore.password = null
+        ssl.keystore.type = JKS
+        ssl.protocol = TLSv1.3
+        ssl.provider = null
+        ssl.secure.random.implementation = null
+        ssl.trustmanager.algorithm = PKIX
+        ssl.truststore.certificates = null
+        ssl.truststore.location = null
+        ssl.truststore.password = null
+        ssl.truststore.type = JKS
+
+2026-09-03T23:14:32.496Z  INFO 1 --- [search-service] [           main] o.a.kafka.common.utils.AppInfoParser     : Kafka version: 3.7.1
+2026-09-03T23:14:32.497Z  INFO 1 --- [search-service] [           main] o.a.kafka.common.utils.AppInfoParser     : Kafka commitId: e2494e6ffb89f828
+2026-09-03T23:14:32.497Z  INFO 1 --- [search-service] [           main] o.a.kafka.common.utils.AppInfoParser     : Kafka startTimeMs: 1788477272494
+2026-09-03T23:14:32.957Z  INFO 1 --- [search-service] [service-admin-0] o.a.kafka.common.utils.AppInfoParser     : App info kafka.admin.client for search-service-admin-0 unregistered
+2026-09-03T23:14:32.964Z  INFO 1 --- [search-service] [service-admin-0] o.apache.kafka.common.metrics.Metrics    : Metrics scheduler closed
+2026-09-03T23:14:32.964Z  INFO 1 --- [search-service] [service-admin-0] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.metrics.JmxReporter
+2026-09-03T23:14:32.964Z  INFO 1 --- [search-service] [service-admin-0] o.apache.kafka.common.metrics.Metrics    : Metrics reporters closed
+2026-09-03T23:14:32.980Z  INFO 1 --- [search-service] [           main] o.s.b.w.embedded.tomcat.TomcatWebServer  : Tomcat started on port 8083 (http) with context path '/'
+2026-09-03T23:14:33.008Z  INFO 1 --- [search-service] [           main] o.a.k.clients.consumer.ConsumerConfig    : ConsumerConfig values: 
+        allow.auto.create.topics = true
+        auto.commit.interval.ms = 5000
+        auto.include.jmx.reporter = true
+        auto.offset.reset = earliest
+        bootstrap.servers = [my-kafka-kafka-bootstrap.toy-infra.svc.cluster.local:9092]
+        check.crcs = true
+        client.dns.lookup = use_all_dns_ips
+        client.id = consumer-search-service-1
+        client.rack = 
+        connections.max.idle.ms = 540000
+        default.api.timeout.ms = 60000
+        enable.auto.commit = false
+        enable.metrics.push = true
+        exclude.internal.topics = true
+        fetch.max.bytes = 52428800
+        fetch.max.wait.ms = 500
+        fetch.min.bytes = 1
+        group.id = search-service
+        group.instance.id = null
+        group.protocol = classic
+        group.remote.assignor = null
+        heartbeat.interval.ms = 3000
+        interceptor.classes = []
+        internal.leave.group.on.close = true
+        internal.throw.on.fetch.stable.offset.unsupported = false
+        isolation.level = read_uncommitted
+        key.deserializer = class org.apache.kafka.common.serialization.StringDeserializer
+        max.partition.fetch.bytes = 1048576
+        max.poll.interval.ms = 300000
+        max.poll.records = 500
+        metadata.max.age.ms = 300000
+        metric.reporters = []
+        metrics.num.samples = 2
+        metrics.recording.level = INFO
+        metrics.sample.window.ms = 30000
+        partition.assignment.strategy = [class org.apache.kafka.clients.consumer.RangeAssignor, class org.apache.kafka.clients.consumer.CooperativeStickyAssignor]
+        receive.buffer.bytes = 65536
+        reconnect.backoff.max.ms = 1000
+        reconnect.backoff.ms = 50
+        request.timeout.ms = 30000
+        retry.backoff.max.ms = 1000
+        retry.backoff.ms = 100
+        sasl.client.callback.handler.class = null
+        sasl.jaas.config = null
+        sasl.kerberos.kinit.cmd = /usr/bin/kinit
+        sasl.kerberos.min.time.before.relogin = 60000
+        sasl.kerberos.service.name = null
+        sasl.kerberos.ticket.renew.jitter = 0.05
+        sasl.kerberos.ticket.renew.window.factor = 0.8
+        sasl.login.callback.handler.class = null
+        sasl.login.class = null
+        sasl.login.connect.timeout.ms = null
+        sasl.login.read.timeout.ms = null
+        sasl.login.refresh.buffer.seconds = 300
+        sasl.login.refresh.min.period.seconds = 60
+        sasl.login.refresh.window.factor = 0.8
+        sasl.login.refresh.window.jitter = 0.05
+        sasl.login.retry.backoff.max.ms = 10000
+        sasl.login.retry.backoff.ms = 100
+        sasl.mechanism = GSSAPI
+        sasl.oauthbearer.clock.skew.seconds = 30
+        sasl.oauthbearer.expected.audience = null
+        sasl.oauthbearer.expected.issuer = null
+        sasl.oauthbearer.jwks.endpoint.refresh.ms = 3600000
+        sasl.oauthbearer.jwks.endpoint.retry.backoff.max.ms = 10000
+        sasl.oauthbearer.jwks.endpoint.retry.backoff.ms = 100
+        sasl.oauthbearer.jwks.endpoint.url = null
+        sasl.oauthbearer.scope.claim.name = scope
+        sasl.oauthbearer.sub.claim.name = sub
+        sasl.oauthbearer.token.endpoint.url = null
+        security.protocol = PLAINTEXT
+        security.providers = null
+        send.buffer.bytes = 131072
+        session.timeout.ms = 45000
+        socket.connection.setup.timeout.max.ms = 30000
+        socket.connection.setup.timeout.ms = 10000
+        ssl.cipher.suites = null
+        ssl.enabled.protocols = [TLSv1.2, TLSv1.3]
+        ssl.endpoint.identification.algorithm = https
+        ssl.engine.factory.class = null
+        ssl.key.password = null
+        ssl.keymanager.algorithm = SunX509
+        ssl.keystore.certificate.chain = null
+        ssl.keystore.key = null
+        ssl.keystore.location = null
+        ssl.keystore.password = null
+        ssl.keystore.type = JKS
+        ssl.protocol = TLSv1.3
+        ssl.provider = null
+        ssl.secure.random.implementation = null
+        ssl.trustmanager.algorithm = PKIX
+        ssl.truststore.certificates = null
+        ssl.truststore.location = null
+        ssl.truststore.password = null
+        ssl.truststore.type = JKS
+        value.deserializer = class org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+
+2026-09-03T23:14:33.053Z  INFO 1 --- [search-service] [           main] o.a.k.c.t.i.KafkaMetricsCollector        : initializing Kafka metrics collector
+2026-09-03T23:14:33.119Z  INFO 1 --- [search-service] [           main] o.a.kafka.common.utils.AppInfoParser     : Kafka version: 3.7.1
+2026-09-03T23:14:33.119Z  INFO 1 --- [search-service] [           main] o.a.kafka.common.utils.AppInfoParser     : Kafka commitId: e2494e6ffb89f828
+2026-09-03T23:14:33.119Z  INFO 1 --- [search-service] [           main] o.a.kafka.common.utils.AppInfoParser     : Kafka startTimeMs: 1788477273119
+2026-09-03T23:14:33.140Z  INFO 1 --- [search-service] [           main] o.a.k.c.c.internals.LegacyKafkaConsumer  : [Consumer clientId=consumer-search-service-1, groupId=search-service] Subscribed to topic(s): policy-events
+2026-09-03T23:14:33.165Z  INFO 1 --- [search-service] [           main] c.t.search.SearchServiceApplication      : Started SearchServiceApplication in 5.474 seconds (process running for 6.046)
+2026-09-03T23:14:33.167Z  INFO 1 --- [search-service] [ntainer#0-0-C-1] org.apache.kafka.clients.Metadata        : [Consumer clientId=consumer-search-service-1, groupId=search-service] Cluster ID: RVsvRSyNQ5WTguJvgWWDgQ
+2026-09-03T23:14:33.171Z  INFO 1 --- [search-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-search-service-1, groupId=search-service] Discovered group coordinator my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 2147483647 rack: null)
+2026-09-03T23:14:33.174Z  INFO 1 --- [search-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-search-service-1, groupId=search-service] (Re-)joining group
+2026-09-03T23:14:33.193Z  INFO 1 --- [search-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-search-service-1, groupId=search-service] Request joining group due to: need to re-join with the given member-id: consumer-search-service-1-6c77913a-63d0-4791-8db4-717133a4ba34
+2026-09-03T23:14:33.194Z  INFO 1 --- [search-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-search-service-1, groupId=search-service] (Re-)joining group
+2026-09-03T23:14:36.198Z  INFO 1 --- [search-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-search-service-1, groupId=search-service] Successfully joined group with generation Generation{generationId=1, memberId='consumer-search-service-1-6c77913a-63d0-4791-8db4-717133a4ba34', protocol='range'}
+2026-09-03T23:14:36.223Z  INFO 1 --- [search-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-search-service-1, groupId=search-service] Finished assignment for group at generation 1: {consumer-search-service-1-6c77913a-63d0-4791-8db4-717133a4ba34=Assignment(partitions=[policy-events-0, policy-events-1, policy-events-2])}
+2026-09-03T23:14:36.238Z  INFO 1 --- [search-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-search-service-1, groupId=search-service] Successfully synced group in generation Generation{generationId=1, memberId='consumer-search-service-1-6c77913a-63d0-4791-8db4-717133a4ba34', protocol='range'}
+2026-09-03T23:14:36.240Z  INFO 1 --- [search-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-search-service-1, groupId=search-service] Notifying assignor about the new Assignment(partitions=[policy-events-0, policy-events-1, policy-events-2])
+2026-09-03T23:14:36.248Z  INFO 1 --- [search-service] [ntainer#0-0-C-1] k.c.c.i.ConsumerRebalanceListenerInvoker : [Consumer clientId=consumer-search-service-1, groupId=search-service] Adding newly assigned partitions: policy-events-0, policy-events-1, policy-events-2
+2026-09-03T23:14:36.262Z  INFO 1 --- [search-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-search-service-1, groupId=search-service] Found no committed offset for partition policy-events-2
+2026-09-03T23:14:36.263Z  INFO 1 --- [search-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-search-service-1, groupId=search-service] Found no committed offset for partition policy-events-0
+2026-09-03T23:14:36.263Z  INFO 1 --- [search-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-search-service-1, groupId=search-service] Found no committed offset for partition policy-events-1
+2026-09-03T23:14:36.273Z  INFO 1 --- [search-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.SubscriptionState    : [Consumer clientId=consumer-search-service-1, groupId=search-service] Resetting offset for partition policy-events-2 to position FetchPosition{offset=0, offsetEpoch=Optional.empty, currentLeader=LeaderAndEpoch{leader=Optional[my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 0 rack: null)], epoch=2}}.
+2026-09-03T23:14:36.275Z  INFO 1 --- [search-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.SubscriptionState    : [Consumer clientId=consumer-search-service-1, groupId=search-service] Resetting offset for partition policy-events-0 to position FetchPosition{offset=0, offsetEpoch=Optional.empty, currentLeader=LeaderAndEpoch{leader=Optional[my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 0 rack: null)], epoch=2}}.
+2026-09-03T23:14:36.275Z  INFO 1 --- [search-service] [ntainer#0-0-C-1] o.a.k.c.c.internals.SubscriptionState    : [Consumer clientId=consumer-search-service-1, groupId=search-service] Resetting offset for partition policy-events-1 to position FetchPosition{offset=0, offsetEpoch=Optional.empty, currentLeader=LeaderAndEpoch{leader=Optional[my-kafka-dual-role-0.my-kafka-kafka-brokers.toy-infra.svc:9092 (id: 0 rack: null)], epoch=2}}.
+2026-09-03T23:14:36.276Z  INFO 1 --- [search-service] [ntainer#0-0-C-1] o.s.k.l.KafkaMessageListenerContainer    : search-service: partitions assigned: [policy-events-0, policy-events-1, policy-events-2]
+2026-09-03T23:14:47.672Z  INFO 1 --- [search-service] [nio-8083-exec-1] o.a.c.c.C.[Tomcat].[localhost].[/]       : Initializing Spring DispatcherServlet 'dispatcherServlet'
+2026-09-03T23:14:47.673Z  INFO 1 --- [search-service] [nio-8083-exec-1] o.s.web.servlet.DispatcherServlet        : Initializing Servlet 'dispatcherServlet'
+2026-09-03T23
+^Cziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/infra/k8s/toy-system/configmap$ kubectl get pods -n toy-system -w
+NAME                                   READY   STATUS    RESTARTS      AGE
+notification-service-5b6759fdb-nhmfh   1/1     Running   2 (30m ago)   25h
+policy-service-67bc6564fc-5mjrk        1/1     Running   2 (30m ago)   24h
+search-service-66fc9b458c-bz2pl        1/1     Running   0             2m10s
+
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/infra/k8s/toy-system/configmap$ kubectl describe pod search-service-66fc9b458c-bz2pl -n toy-system
+Name:             search-service-66fc9b458c-bz2pl
+Namespace:        toy-system
+Priority:         0
+Service Account:  default
+Node:             ziqiao-asm100/192.168.40.23
+Start Time:       Fri, 04 Sep 2026 08:14:26 +0900
+Labels:           app=search-service
+                  pod-template-hash=66fc9b458c
+Annotations:      kubectl.kubernetes.io/restartedAt: 2026-09-04T08:14:25+09:00
+Status:           Running
+IP:               10.42.0.150
+IPs:
+  IP:           10.42.0.150
+Controlled By:  ReplicaSet/search-service-66fc9b458c
+Containers:
+  search-service:
+    Container ID:   containerd://ba24f4c34cea70098a753b3d12ada4a87a046e502cc9d95aebac1ff2266799e2
+    Image:          localhost:5000/search-service:202609020807-3805cc8
+    Image ID:       localhost:5000/search-service@sha256:6f444150dbc6dbb50c2597a47b78ab574fbfa9ac6af7606928ec4685b488c41b
+    Port:           8083/TCP
+    Host Port:      0/TCP
+    State:          Running
+      Started:      Fri, 04 Sep 2026 08:14:26 +0900
+    Ready:          True
+    Restart Count:  0
+    Liveness:       http-get http://:8083/actuator/health delay=40s timeout=1s period=20s #success=1 #failure=3
+    Readiness:      http-get http://:8083/actuator/health delay=20s timeout=1s period=10s #success=1 #failure=3
+    Environment Variables from:
+      shared-config  ConfigMap  Optional: false
+    Environment:
+      SPRING_ELASTICSEARCH_USERNAME:  <set to the key 'ELASTICSEARCH_USERNAME' in secret 'es-credentials'>  Optional: false
+      SPRING_ELASTICSEARCH_PASSWORD:  <set to the key 'ELASTICSEARCH_PASSWORD' in secret 'es-credentials'>  Optional: false
+      SERVER_PORT:                    8083
+    Mounts:
+      /certs from es-ca-cert (ro)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-5xs9n (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       True 
+  ContainersReady             True 
+  PodScheduled                True 
+Volumes:
+  es-ca-cert:
+    Type:        Secret (a volume populated by a Secret)
+    SecretName:  my-es-es-http-certs-public
+    Optional:    false
+  kube-api-access-5xs9n:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:
+  Type    Reason     Age    From               Message
+  ----    ------     ----   ----               -------
+  Normal  Scheduled  3m32s  default-scheduler  Successfully assigned toy-system/search-service-66fc9b458c-bz2pl to ziqiao-asm100
+  Normal  Pulled     3m32s  kubelet            spec.containers{search-service}: Container image "localhost:5000/search-service:202609020807-3805cc8" already present on machine and canbe accessed by the pod
+  Normal  Created    3m32s  kubelet            spec.containers{search-service}: Container created
+  Normal  Started    3m32s  kubelet            spec.containers{search-service}: Container started
+
+
+  READY 1/1，RESTARTS 0——search-service这次真正稳定跑起来了。之前你贴的describe那份输出其实是旧Pod(search-service-54c856587-w57vm)的历史记录(还带着"证书Secret not found"那些残留事件，那是修复证书跨namespace问题之前的旧账)，rollout restart触发后，K8s创建了一个全新的Pod(search-service-66fc9b458c-bz2pl)，新Pod的日志和状态才是真正反映当前配置的结果——这也顺带印证了我们之前聊过的"Event有独立生命周期、Pod被替换后旧Event可能还残留一阵子"这件事，你现在亲眼碰到了一个实例。
+
+日志确认的几个关键信号，这次全部正常
+没有再出现SSLPeerUnverifiedException——主机名校验问题彻底解决，ELASTICSEARCH_URIS改成my-es-es-http.toy-infra.svc这个SAN列表里登记的短形式，生效了
+policyDocumentRepository这个bean这次顺利初始化——回顾上次崩溃的根因(Failed to instantiate SimpleElasticsearchRepository)，这次日志完全没有再报这个异常，说明Spring Data Elasticsearch能正常连上ES、正常检查/创建索引了
+Kafka消费者分配到了3个分区(policy-events-0/1/2)——对应我们之前聊过的"分区数从1自动提升到3"那次操作，这次search-service作为消费者，正确领到了全部3个分区
+
+至此，5个业务服务里4个纯后端服务全部跑通：notification-service、policy-service、search-service都验证了各自的下游依赖连接正常。
+
+建它的Service
+bash
+mkdir -p /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-system/search-service
+cd /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-system/search-service
+
+cat <<'EOF' > service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: search-service
+  namespace: toy-system
+spec:
+  selector:
+    app: search-service
+  ports:
+    - port: 8083
+      targetPort: 8083
+EOF
+
+kubectl apply -f service.yaml
+接下来是最后两个：gateway-service + frontend，涉及Ingress
+
+这两个是"对外"的服务，会用到我们很早之前定好的app.homelab.local和api.homelab.local这两个域名，还要把之前讲过的terminationGracePeriodSeconds、CORS配置、VITE_API_BASE_URL这些之前埋下的伏笔全部收尾。要现在继续，还是先在这里休息一下？
