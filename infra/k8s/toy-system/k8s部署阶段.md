@@ -2221,3 +2221,402 @@ kubectl apply -f service.yaml
 接下来是最后两个：gateway-service + frontend，涉及Ingress
 
 这两个是"对外"的服务，会用到我们很早之前定好的app.homelab.local和api.homelab.local这两个域名，还要把之前讲过的terminationGracePeriodSeconds、CORS配置、VITE_API_BASE_URL这些之前埋下的伏笔全部收尾。要现在继续，还是先在这里休息一下？
+
+
+## 最后两个服务
+先提一句：三个服务都有几次RESTARTS记录——回顾一下之前我们讨论过的"K8s重启不影响已运行容器"，但这次是容器本身重启了，不是k3s服务重启那种情况。既然它们现在都稳定Running，大概率是之前几次rollout restart、或者你调试过程中的手动操作导致的正常重启记录，不代表当前有问题——如果之后发现重启次数还在持续增长，那才是需要警惕livenessProbe是不是判太严格的信号。现在先往下走，最后可以一起排查。
+
+gateway-service的Deployment
+bash
+mkdir -p /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-system/gateway-service
+cd /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-system/gateway-service
+
+cat <<'EOF' > deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-service
+  namespace: toy-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gateway-service
+  template:
+    metadata:
+      labels:
+        app: gateway-service
+    spec:
+      terminationGracePeriodSeconds: 35
+      containers:
+        - name: gateway-service
+          image: localhost:5000/gateway-service:<换成你实际的tag>
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: gateway-config
+            - secretRef:
+                name: jwt-secret
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 20
+EOF
+
+kubectl apply -f deployment.yaml
+
+注意这里没有挂shared-config——回顾gateway-service的application.yml，它不直接连Kafka/ES/MySQL/Redis，只做HTTP转发，所以不需要那份共享配置，只需要gateway-config(路由地址+CORS)和jwt-secret。
+
+gateway-service的Service
+bash
+cat <<'EOF' > service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway-service
+  namespace: toy-system
+spec:
+  selector:
+    app: gateway-service
+  ports:
+    - port: 8080
+      targetPort: 8080
+EOF
+
+kubectl apply -f service.yaml
+gateway-service的Ingress——对外走api.homelab.local
+bash
+cat <<'EOF' > ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gateway-service
+  namespace: toy-system
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: api.homelab.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway-service
+                port:
+                  number: 8080
+EOF
+
+kubectl apply -f ingress.yaml
+
+
+frontend的Deployment
+bash
+mkdir -p /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-system/frontend
+cd /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-system/frontend
+
+cat <<'EOF' > deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: toy-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: localhost:5000/frontend:<换成你实际的tag>
+          ports:
+            - containerPort: 80
+EOF
+
+kubectl apply -f deployment.yaml
+
+这里没有配探针、没有配terminationGracePeriodSeconds——nginx serve静态文件是个非常轻量、几乎不会"卡死"的场景，不需要像Java服务那样精细的健康检查，属于合理的简化。
+
+frontend的Service + Ingress
+bash
+cat <<'EOF' > service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: toy-system
+spec:
+  selector:
+    app: frontend
+  ports:
+    - port: 80
+      targetPort: 80
+EOF
+
+cat <<'EOF' > ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: frontend
+  namespace: toy-system
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: app.homelab.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80
+EOF
+
+kubectl apply -f service.yaml
+kubectl apply -f ingress.yaml
+最后：宿主机DNS解析 + 验证
+bash
+echo "192.168.40.23 app.homelab.local" | sudo tee -a /etc/hosts
+echo "192.168.40.23 api.homelab.local" | sudo tee -a /etc/hosts
+bash
+kubectl get pods -n toy-system
+kubectl get ingress -n toy-system
+
+浏览器打开https://app.homelab.local应该能看到前端页面，如果frontend调用/api/policies这类接口，会经过我们之前配的VITE_API_BASE_URL(指向api.homelab.local)→ gateway-service → policy-service这条完整链路。
+
+镜像tag记得换成你实际推送的那两个，跑完把结果贴给我，我们做端到端验证。
+
+重启是因为我每次玩完都会关机，下次开机再玩
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/infra/k8s/toy-system/frontend$ kubectl logs -f frontend-7df5b7b95d-v57n9 -n toy-system
+/docker-entrypoint.sh: /docker-entrypoint.d/ is not empty, will attempt to perform configuration
+/docker-entrypoint.sh: Looking for shell scripts in /docker-entrypoint.d/
+/docker-entrypoint.sh: Launching /docker-entrypoint.d/10-listen-on-ipv6-by-default.sh
+10-listen-on-ipv6-by-default.sh: info: Getting the checksum of /etc/nginx/conf.d/default.conf
+10-listen-on-ipv6-by-default.sh: info: /etc/nginx/conf.d/default.conf differs from the packaged version
+/docker-entrypoint.sh: Sourcing /docker-entrypoint.d/15-local-resolvers.envsh
+/docker-entrypoint.sh: Launching /docker-entrypoint.d/20-envsubst-on-templates.sh
+/docker-entrypoint.sh: Launching /docker-entrypoint.d/30-tune-worker-processes.sh
+/docker-entrypoint.sh: Configuration complete; ready for start up
+2026/09/05 00:23:59 [notice] 1#1: using the "epoll" event method
+2026/09/05 00:23:59 [notice] 1#1: nginx/1.31.4
+2026/09/05 00:23:59 [notice] 1#1: built by gcc 15.2.0 (Alpine 15.2.0) 
+2026/09/05 00:23:59 [notice] 1#1: OS: Linux 7.0.0-29-generic
+2026/09/05 00:23:59 [notice] 1#1: getrlimit(RLIMIT_NOFILE): 1048576:1048576
+2026/09/05 00:23:59 [notice] 1#1: start worker processes
+2026/09/05 00:23:59 [notice] 1#1: start worker process 29
+2026/09/05 00:23:59 [notice] 1#1: start worker process 30
+2026/09/05 00:23:59 [notice] 1#1: start worker process 31
+2026/09/05 00:23:59 [notice] 1#1: start worker process 32
+2026/09/05 00:23:59 [notice] 1#1: start worker process 33
+2026/09/05 00:23:59 [notice] 1#1: start worker process 34
+2026/09/05 00:23:59 [notice] 1#1: start worker process 35
+2026/09/05 00:23:59 [notice] 1#1: start worker process 36
+
+前端niginx不是很熟悉，你看这个启动是正常的对不？docker镜像其实里面从操作系统层级就打到基础镜像了，再装nginx，jvm这些，最后才是我们的应用复制进某个文件夹，每个image其实可以当作一个完整的linux系统？
+
+重启是因为我每次玩完都会关机，下次开机再玩
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/infra/k8s/toy-system/frontend$ kubectl logs -f frontend-7df5b7b95d-v57n9 -n toy-system
+/docker-entrypoint.sh: /docker-entrypoint.d/ is not empty, will attempt to perform configuration
+/docker-entrypoint.sh: Looking for shell scripts in /docker-entrypoint.d/
+/docker-entrypoint.sh: Launching /docker-entrypoint.d/10-listen-on-ipv6-by-default.sh
+10-listen-on-ipv6-by-default.sh: info: Getting the checksum of /etc/nginx/conf.d/default.conf
+10-listen-on-ipv6-by-default.sh: info: /etc/nginx/conf.d/default.conf differs from the packaged version
+/docker-entrypoint.sh: Sourcing /docker-entrypoint.d/15-local-resolvers.envsh
+/docker-entrypoint.sh: Launching /docker-entrypoint.d/20-envsubst-on-templates.sh
+/docker-entrypoint.sh: Launching /docker-entrypoint.d/30-tune-worker-processes.sh
+/docker-entrypoint.sh: Configuration complete; ready for start up
+2026/09/05 00:23:59 [notice] 1#1: using the "epoll" event method
+2026/09/05 00:23:59 [notice] 1#1: nginx/1.31.4
+2026/09/05 00:23:59 [notice] 1#1: built by gcc 15.2.0 (Alpine 15.2.0) 
+2026/09/05 00:23:59 [notice] 1#1: OS: Linux 7.0.0-29-generic
+2026/09/05 00:23:59 [notice] 1#1: getrlimit(RLIMIT_NOFILE): 1048576:1048576
+2026/09/05 00:23:59 [notice] 1#1: start worker processes
+2026/09/05 00:23:59 [notice] 1#1: start worker process 29
+2026/09/05 00:23:59 [notice] 1#1: start worker process 30
+2026/09/05 00:23:59 [notice] 1#1: start worker process 31
+2026/09/05 00:23:59 [notice] 1#1: start worker process 32
+2026/09/05 00:23:59 [notice] 1#1: start worker process 33
+2026/09/05 00:23:59 [notice] 1#1: start worker process 34
+2026/09/05 00:23:59 [notice] 1#1: start worker process 35
+2026/09/05 00:23:59 [notice] 1#1: start worker process 36
+
+前端niginx不是很熟悉，你看这个启动是正常的对不？docker镜像其实里面从操作系统层级就打到基础镜像了，再装nginx，jvm这些，最后才是我们的应用复制进某个文件夹，每个image其实可以当作一个完整的linux系统？
+
+一、这次nginx启动日志——完全正常，没有任何问题
+
+逐行看一下关键信息：
+
+10-listen-on-ipv6-by-default.sh: info: ... differs from the packaged version——这条不是报错，是nginx镜像自带的启动脚本在善意提醒你"我们发现你自定义了default.conf(跟镜像内置的默认版本不一样)"，正是我们COPY nginx.conf那一步生效的证明，属于预期行为
+using the "epoll" event method——nginx选择了Linux下高性能的I/O事件模型，正常
+start worker process 29~36——启动了8个worker进程，这个数字通常等于宿主机的CPU核心数(nginx默认按核心数分配worker，一个worker独占一个核心，充分利用多核)
+最后没有任何error或emerg级别的日志，进程干净利落地进入了"正常服务中"的状态
+
+这就是一次教科书式的正常启动，可以直接去浏览器验证https://app.homelab.local了。
+
+二、镜像"打到操作系统层级"这个理解——大方向对，但有一个关键区别需要纠正
+
+你说的"每个image可以当作一个完整的Linux系统"，这个说法在文件系统层面是对的，但在"系统"这个词的完整含义上，容易跟虚拟机(VM)搞混，这个区别对你以后判断"容器化 vs 虚拟化"的架构决策很重要，值得讲透。
+
+镜像确实是"一整套文件系统快照"——这部分你说的没错
+
+node:22-alpine、nginx:alpine、eclipse-temurin:21-jre这些基础镜像，内部确实打包了一整套类似迷你Linux发行版的文件系统——有/bin、/etc、/lib这些目录，装好了对应的运行时(Node.js、nginx、JVM)，我们的应用文件(dist/、app.jar)最后被复制进这套文件系统的某个路径下，跟镜像其余部分一起打包成最终产物——这个"分层叠加、最后变成一整套可用文件系统"的理解完全正确。
+
+但容器没有自己独立的内核(kernel)——这是跟虚拟机最核心的区别
+
+这是需要澄清的关键点：容器共享宿主机的Linux内核，不像虚拟机那样，每个虚拟机都跑着一套完全独立的操作系统内核。具体来说：
+
+虚拟机：Hypervisor(比如VMware、KVM)在硬件层面模拟出多台"假的电脑"，每台虚拟机里都装着自己完整的内核，虚拟机之间彻底隔离，一台虚拟机的内核崩了不会波及别的虚拟机，但代价是每台虚拟机都要背着一整个内核+操作系统的重量，启动慢、资源开销大
+容器：所有容器共用宿主机(这里就是你的k3s node)那一份内核，容器"看起来"像一个独立系统，靠的是Linux内核自带的两个机制——namespace(让每个容器以为自己有独立的进程列表、网络、文件系统视图，互相看不见彼此)和cgroup(限制每个容器能用多少CPU/内存)——这两个机制"伪装"出了隔离的假象，但内核本身只有一份，是被所有容器共享的
+一个具体的推论，帮你巩固这个区别
+
+你的4个Java服务容器，虽然基础镜像都是eclipse-temurin:21-jre，但它们并没有各自跑着4份独立的Linux内核——它们全部共用你这台node(ziqiao-asm100)唯一的那份内核，容器只是共享内核之上，各自被隔离出来的一套用户态文件系统+进程视图。这也是为什么容器启动速度是"秒级"(不需要像虚拟机那样重新引导一个内核)，而虚拟机启动往往要几十秒——因为容器根本不需要"启动一个新内核"这个最耗时的步骤，直接复用宿主机现成的内核，只是换了一套"看到的文件系统和进程列表"而已。
+
+一句话总结这个区别
+
+"完整的Linux系统"如果指的是"一整套用户态文件系统+能跑各种程序"，容器确实是这样；但如果指的是"有自己独立的内核"，容器不是，虚拟机才是——这也是容器比虚拟机轻量得多的根本原因，代价是隔离性比虚拟机弱一些(理论上，一个精心构造的容器逃逸漏洞，有可能影响到共享的宿主机内核，虚拟机的隔离边界更硬)。
+
+浏览器打开https://app.homelab.local确认页面能正常显示，如果一切顺利，我们就可以做完整的端到端链路测试了(从frontend发起请求，走gateway、policy、Kafka、notification/search全链路)。
+
+
+name: kibana
+  namespace: toy-infra
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+kibana是写的最多的，其实我还是每完全搞懂，不管是gateway这种转发的，还是一般spring web mvc都需要看到path才能调用实际的方法，我理解都是需要原始路径的，不能被负载均衡改了。。。
+但是这两个rewrite-target: backend-protocol: 再具体讲讲吧，脱离homelab的场景也行，单纯讲清楚是干什么的，我理解这是nginx的功能，只是被k8s的ingress来配置
+
+理解完全正确——Ingress、gateway-service、Spring MVC，全部都靠"路径"来决定该调用哪个具体逻辑，如果路径在中间被负载均衡器/网关意外篡改，整条链路的路由判断就全乱了。这两个annotation确实都是nginx自身早就有的功能，只是通过K8s Ingress这套"声明式配置"的方式暴露出来去驱动nginx——K8s自己不处理HTTP流量,ingress-nginx controller在背后把这些annotation翻译成一份真正的nginx配置文件,该干活的还是nginx本身。
+
+一、rewrite-target——脱离homelab场景，它真正要解决的问题
+
+设想一个真实场景：你有一台服务器，想在同一个域名下，用不同的路径前缀，把请求分发给完全不同的、各自独立开发的应用，比如：
+
+example.com/blog/...    → 转发给博客系统(这个系统自己认为自己"活在根路径下")
+example.com/shop/...    → 转发给商城系统(同样认为自己"活在根路径下")
+
+问题来了：博客系统内部写代码时，完全不知道自己以后会被部署在/blog这个前缀下面——它的路由规则可能写的是/posts/123,不是/blog/posts/123。如果Ingress把请求原样转发过去（带着/blog/posts/123这个完整路径）,博客系统内部会因为找不到匹配/blog/posts/123的路由规则而返回404。
+
+这正是rewrite-target真正派上用场的场景——用正则表达式，把路径里"属于Ingress自己的那一段前缀"精确捕获并剥离掉，只把"博客系统认识的那部分"转发过去：
+
+yaml
+path: /blog(/|$)(.*)
+rewrite-target: /$2
+path这个正则：匹配/blog本身，加上后面所有内容，并且用括号把"后面所有内容"单独捕获成一个组(这就是$2)
+请求example.com/blog/posts/123进来，匹配后，$2捕获到的是posts/123
+rewrite-target: /$2：把最终转发给后端的路径，改写成/posts/123——博客系统看到的，就是它自己认识的、不带/blog前缀的路径
+二、为什么我们之前那些场景，都没用上这个功能
+
+回顾一下我们的用法，全部是"一个域名对应一整个后端应用"这种模式(kibana.homelab.local整个域名只服务Kibana，没有跟别的应用共享路径空间)——这种场景下，根本不存在"需要剥离前缀"这回事，因为压根没有前缀需要剥离,Kibana应该原样收到它自己发出的每一个请求路径。这也是为什么之前反复验证下来，path: /配合rewrite-target: /是个"空操作"——不是因为这个功能本身没用，而是我们的场景根本用不上它，这个annotation放在这里纯属历史遗留的多余配置(大概率是从某个教程照抄过来的默认写法，很多人确实会不假思索地带上它)。
+
+三、backend-protocol——这个解决的是完全不同层面的问题：Ingress到后端这一段用什么协议
+
+先建立一个关键认知：一次完整的HTTP(S)请求，实际上被Ingress拆成了两段独立的网络连接：
+
+[浏览器] ──段①── [Ingress/nginx] ──段②── [真正的后端Pod]
+
+这两段各自可以独立选择用HTTP还是HTTPS，互不影响：
+
+段①(浏览器到Ingress)——由Ingress的tls配置块决定(如果配了TLS证书，浏览器就是用HTTPS连Ingress；我们homelab这套自签名证书场景就属于这里)
+段②(Ingress到后端Pod)——默认情况下，nginx-ingress假设后端服务本身只支持普通HTTP，用HTTP去连接后端Pod。如果后端服务本身要求必须用HTTPS(比如Kibana自己内部监听的就是HTTPS端口，不接受纯HTTP连接)，就必须显式加上：
+yaml
+nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+
+这行annotation告诉nginx："段②这一段，也请用HTTPS去连接后端，别用默认的HTTP"——如果漏掉这一行，nginx会尝试用HTTP去连一个只认HTTPS的Kibana Pod，握手会直接失败，报类似"连接被拒绝"或者"协议不匹配"的错误。
+
+四、一个更完整的心智模型：这两段协议可以自由组合，四种情况都合理存在
+段①(用户↔Ingress)	段②(Ingress↔后端)	常见场景
+HTTP	HTTP	内部测试环境，图省事全走明文
+HTTPS	HTTP	最常见——用户看到的是加密的，Ingress自己终止TLS后，内网这段(相对可信)用明文转发，减少后端自己维护证书的负担
+HTTPS	HTTPS	后端服务本身强制要求TLS(比如我们的Kibana)，Ingress全程加密转发，即使是内网也不信任明文
+HTTP	HTTPS	少见但存在——比如某些遗留后端只肯接受HTTPS，前端暂时还没上TLS证书
+
+我们的Kibana正是"HTTPS↔HTTPS"这一档——因为ECK给Kibana装的证书，逼着它只认HTTPS连接，backend-protocol: HTTPS就是专门用来适配这种"后端很强硬、必须用密文跟它说话"的情况。
+
+日本語(かな付き)：
+
+rewrite-targetが[本当:ほんとう]に[役立:やくだ]つのは、1[つ:つ]のドメインの[下:した]で、パスの[接頭辞:せっとうじ]によって[複数:ふくすう]の[別:べつ]々のアプリに[振:ふ]り[分:わ]ける[場合:ばあい]です。たとえば/blogはブログシステムへ、/shopはショップシステムへ——でもブログシステム[自体:じたい]は「[自分:じぶん]が/blogという[接頭辞:せっとうじ]の[下:した]で[動:うご]いている」ことを[知:し]りません。だから、Ingressの[段階:だんかい]で/blogという[部分:ぶぶん]だけを[削:けず]り[取:と]って、ブログシステムが[認識:にんしき]できる[形:かたち]のパスにしてから[転送:てんそう]する[必要:ひつよう]があります。これがrewrite-targetの[本来:ほんらい]の[目的:もくてき]です。
+
+[私:わたし]たちのKafka UIやKibanaのように「1つのドメインが[丸ごと:まるごと]1つのアプリ[専用:せんよう]」という[構成:こうせい]では、この[機能:きのう]は[出番:でばん]がなく、path: /とrewrite-target: /の[組:く]み[合:あ]わせは[実質:じっしつ]「[何:なに]もしていない」のと[同:おな]じです。
+
+backend-protocolは[全:まった]く[別:べつ]の[話:はなし]です。1[回:かい]のリクエストは[実際:じっさい]には**2[つ:つ]の[独立:どくりつ]した[区間:くかん]**に[分:わ]かれています:①ユーザー↔Ingress、②Ingress↔[本当:ほんとう]の[バックエンド:ばっくえんど]Pod。それぞれの[区間:くかん]で[別:べつ]々にHTTP/HTTPSを[選:えら]べます。デフォルトでは②の[区間:くかん]はHTTPで[接続:せつぞく]しますが、KibanaのようにHTTPSしか[受:う]け[付:つ]けないバックエンドには、backend-protocol: HTTPSで「この[区間:くかん]もHTTPSで[接続:せつぞく]してください」と[明示:めいじ]する[必要:ひつよう]があります。
+
+English:
+
+rewrite-target earns its keep in a scenario like: one domain routing to multiple independent apps by path prefix — /blog to a blog system, /shop to a shop system — where the blog system itself has no idea it's being served under a /blog prefix; it expects /posts/123, not /blog/posts/123. That's when you need the Ingress layer to strip the prefix before forwarding, which is exactly what capture-group-based rewrite-target does.
+
+In our setups (Kafka UI, Kibana), each domain maps to exactly one whole app — there's no prefix to strip, so path: / + rewrite-target: / is a genuine no-op, not a "correct but unnecessary" config; it just does nothing at all in that shape.
+
+backend-protocol addresses a completely separate question. Every request through an Ingress is really split into two independent legs: ① browser ↔ Ingress, and ② Ingress ↔ the actual backend Pod. Each leg can independently be HTTP or HTTPS. By default, leg ② uses plain HTTP. When the backend itself refuses anything but HTTPS — like Kibana, which ECK has configured to only accept TLS connections — you need backend-protocol: HTTPS to tell nginx to speak HTTPS on that inner leg too, or the connection attempt fails outright.
+
+
+
+
+我们是不是还没有给homelab的node自签名？
+
+rewrite-target:这组字段根本就没配path:，在容器时代应用都各自跑，根本就没有必要使用这个功能，我会全部删掉。。。
+
+另外我不小心在hots不小心多加了一条，想删掉，vim里保存不起来，帮我看看该怎么编辑一下
+
+
+一、关于"给node自签名"——目前的真相是我们其实没有主动做这件事，一直在用ingress-nginx自带的默认证书
+
+回顾一下——我们在写kibana-ingress.yaml、kafka-ui-ingress.yaml这几份yaml时，从来没有在Ingress的spec里加过tls:这个字段，也没有创建过任何证书Secret挂给Ingress用。但浏览器打开https://kibana.homelab.local却"能用"(伴随着证书警告)——这是因为ingress-nginx controller自己内置了一份"万能兜底自签名证书"(社区里俗称"fake certificate")，只要有人用HTTPS方式访问、而这个host又没有专门配置证书，nginx就会拿这份通用的兜底证书顶上去应付，这也是为什么浏览器一直提示"证书不受信任"——它确实是自签名的，但不是"我们为这个域名量身定制"的，是ingress-nginx自己那份放之四海而皆准的默认证书。
+
+如果想让这几个域名各自有专属的、更"名副其实"的自签名证书(消除浏览器警告，或者至少让证书上的域名跟你访问的域名精确匹配)，需要额外用openssl生成证书、建成Secret、在每个Ingress的spec.tls里引用——这是一项独立的、可选的加固工作,现在功能上完全不影响使用,是否要做取决于你想不想更"贴近生产实践"地体验这一层,还是先继续手头的业务链路验证。
+
+二、去掉rewrite-target的判断完全正确
+
+你的结论对——既然所有Ingress目前都是"一个域名对应一整个后端应用",没有任何"路径共享/前缀剥离"的场景,这个annotation从一开始就是可以删除的多余配置,删掉是更清晰、更不容易误导人的做法。
+
+三、修复/etc/hosts重复行——你踩到的两个坑，正好都值得讲清楚
+第一个坑：为什么vim里编辑了却保存不了
+
+你之前是直接vim /etc/hosts(没加sudo)——vim能"打开看"是因为普通用户对这个文件有读权限,但/etc/hosts归root所有,普通用户没有写权限,所以vim里编辑完敲:w保存时,会报E212: Can't open file for writing这类错误,内容改了但存不进去。
+
+第二个坑：su root认证失败——不是密码打错，是Ubuntu默认没给root账号设密码
+
+Ubuntu出于安全考虑，默认不允许直接用密码登录root账号(root账号的密码是被锁定/未设置状态)，系统设计上就是让你用sudo(临时借用当前用户的权限、走一次性授权)而不是切换成真正的root用户——这也是为什么su root会直接认证失败，不是你密码记错了。
+
+正确的修复方式
+
+最简单的一种——因为多出来的这一行api.homelab.local正好是文件最后一行，直接删掉最后一行：
+
+bash
+sudo sed -i '$d' /etc/hosts
+
+$d的意思是"定位到最后一行($)，删掉它(d)"，-i是"直接原地修改文件"(回顾我们之前讲过的这个参数)。
+
+确认结果：
+
+bash
+cat /etc/hosts
+
+应该能看到api.homelab.local那一行现在只剩一份了。
+
+如果以后还想用vim编辑这类系统文件
+
+正确姿势是从一开始就加sudo：
+
+bash
+sudo vim /etc/hosts
+
+这样vim这个进程本身就是以root权限启动的,编辑完:wq保存不会再有权限问题——不需要额外去"切换成root用户"，sudo这一层已经够用了。

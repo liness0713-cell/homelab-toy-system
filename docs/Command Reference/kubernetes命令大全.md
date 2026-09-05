@@ -64,6 +64,8 @@ kubectl describe svc <svc-name>
 kubectl describe node <node-name>
 kubectl describe deployment <deploy-name>
 kubectl describe ingress <ingress-name>
+# 独立查events
+kubectl get events -n toy-system --field-selector involvedObject.name=<pod-name...>
 
 # 输出格式控制
 kubectl get pod <pod-name> -o yaml       # 完整 YAML（排障/学习字段结构必看）
