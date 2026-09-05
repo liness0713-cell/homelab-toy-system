@@ -875,3 +875,875 @@ bash
 kubectl delete pod test-node2
 
 From here you can head back to P6 (Prometheus/Grafana monitoring) — the multi-node setup is ready to go.
+
+我还有个更老的mac，还有个老windows，我觉得这个虚拟机挺好的
+
+中文
+
+这个想法很好——如果这两台都是真正独立的物理机，价值比在同一台Mac上开虚拟机模拟第三个node要高得多，之前顾虑的"两个虚拟机节点挤在同一台物理机上失去跨物理机意义"这个问题直接就不存在了。不过在动手前，有两个关键信息需要先确认，直接影响能不能装、怎么装：
+
+关于老Mac
+芯片型号：跑一下 sysctl -n machdep.cpu.brand_string（如果是Intel）或者看"关于本机"（如果是Apple Silicon的M系列）。这决定了它是不是跟现有两个node同架构（amd64）——如果这台更老的Mac也是Intel，直接复用现有镜像，零障碍；如果碰巧是M1/M2这类arm64，就要考虑之前提过的多架构镜像构建问题
+内存和磁盘：跟之前一样跑sysctl -n hw.memsize和df -h /
+关于老Windows机器
+
+这个稍微复杂一点，Windows机器要加入k3s集群，必须先有Linux内核，几个可选路径：
+
+最推荐：直接把这台Windows机器抹掉重装成Ubuntu（如果这台机器不再需要跑Windows软件的话）——这是最干净、最接近生产环境的做法，物理机直接跑k3s agent，没有虚拟化开销
+如果还想保留Windows：可以用WSL2（Windows自带的Linux子系统）跑k3s agent，但WSL2本质上也是一层虚拟化，网络配置比原生Linux更麻烦一些（尤其是让WSL2的虚拟网卡桥接到局域网这一步，经验上比Mac的Multipass桥接更容易踩坑）
+或者用VirtualBox/VMware在Windows上开一个Ubuntu虚拟机，跟你现在Mac上Multipass的做法思路一致
+建议顺序
+
+先把老Mac的规格发我，这个大概率能直接复用现在的经验快速搞定；老Windows那台涉及"要不要抹盘装Ubuntu"这种取舍，可以之后再单独聊。
+
+日本語(ふりがな付き)
+
+これはいいアイデアですね——もしこの二(ふた)台(だい)が本当(ほんとう)に独立(どくりつ)した物理(ぶつり)マシンであれば、同(おな)じMac上(じょう)で仮想(かそう)マシンを立(た)てて3(さん)台目(だいめ)のノードをシミュレートするより、はるかに価値(かち)があります。前回(ぜんかい)懸念(けねん)していた「二(ふた)つの仮想(かそう)マシンノードが同(おな)じ物理(ぶつり)マシンに同居(どうきょ)して、物理(ぶつり)マシンをまたぐ意味(いみ)が薄(うす)れる」という問題(もんだい)自体(じたい)がそもそも発生(はっせい)しません。ただし手(て)を動(うご)かす前(まえ)に、確認(かくにん)しておくべき重要(じゅうよう)な情報(じょうほう)が二(ふた)つあり、それによって「そもそも入(い)れられるか」「どう入(い)れるか」が変(か)わってきます。
+
+古(ふる)いMacについて
+チップの型番(かたばん)：sysctl -n machdep.cpu.brand_stringを実行(じっこう)する(Intelの場合(ばあい))か、「このMacについて」を見(み)る(Apple SiliconのMシリーズの場合(ばあい))。これによって既存(きぞん)の二(ふた)つのノードと同(おな)じアーキテクチャ(amd64)かどうかが決(き)まります——もしこの古(ふる)いMacもIntelであれば、既存(きぞん)のイメージをそのまま使(つか)えて障害(しょうがい)ゼロです。もし万(まん)が一(いち)M1/M2のようなarm64だった場合(ばあい)は、以前(いぜん)話(はな)したマルチアーキテクチャイメージのビルドを考慮(こうりょ)する必要(ひつよう)があります
+メモリとディスク：前回(ぜんかい)と同(おな)じようにsysctl -n hw.memsizeとdf -h /を実行(じっこう)してください
+古(ふる)いWindowsマシンについて
+
+こちらは少(すこ)し複雑(ふくざつ)です。Windowsマシンをk3sクラスターに参加(さんか)させるには、**まずLinuxカーネルが必要(ひつよう)**です。いくつか選択肢(せんたくし)があります：
+
+一番(いちばん)おすすめ：このWindowsマシンを消(け)してUbuntuに入(い)れ替(か)える(もうWindowsソフトを動(うご)かす必要(ひつよう)がないなら)——これが一番(いちばん)クリーンで、本番環境(ほんばんかんきょう)に一番(いちばん)近(ちか)いやり方(かた)です。物理(ぶつり)マシン上(じょう)で直接(ちょくせつ)k3s agentを動(うご)かせるので、仮想化(かそうか)のオーバーヘッドがありません
+Windowsを残(のこ)したい場合(ばあい)：WSL2(Windows内蔵(ないぞう)のLinuxサブシステム)でk3s agentを動(うご)かすこともできますが、WSL2自体(じたい)も一種(いっしゅ)の仮想化(かそうか)レイヤーで、ネットワーク設定(せってい)がネイティブLinuxより少(すこ)し面倒(めんどう)です(特(とく)にWSL2の仮想(かそう)NICをLANにブリッジさせるステップは、経験上(けいけんじょう)Macの Multipassブリッジよりつまずきやすいです)
+または、Windows上(じょう)でVirtualBox/VMwareを使(つか)ってUbuntu仮想(かそう)マシンを立(た)てる、今(いま)Mac上(じょう)でMultipassでやっているのと同(おな)じ考(かんが)え方(かた)です
+おすすめの進(すす)め方(かた)
+
+まずは古(ふる)いMacのスペックを送(おく)ってください。おそらく今(いま)までの経験(けいけん)をそのまま活(い)かして素早(すばや)く進(すす)められるはずです。古(ふる)いWindowsの方(ほう)は「Ubuntuに入(い)れ替(か)えるかどうか」というトレードオフが絡(から)むので、それはまた別途(べっと)相談(そうだん)しましょう。
+
+English
+
+Good instinct — if these two are genuinely separate physical machines, that's much more valuable than spinning up a VM on the same Mac to simulate a third node. The earlier concern about "two VM-nodes sitting on the same physical machine losing the point of crossing physical machines" simply doesn't apply here. But before diving in, there are two key pieces of info that directly determine feasibility and approach:
+
+About the older Mac
+Chip model: run sysctl -n machdep.cpu.brand_string (if Intel) or check "About This Mac" (if it's an Apple Silicon M-series). This determines whether it matches the architecture (amd64) of your existing two nodes — if this older Mac is also Intel, you can reuse your existing images with zero friction; if it happens to be an M1/M2 (arm64), you'll need to consider the multi-arch image build issue mentioned earlier.
+Memory and disk: same as before, sysctl -n hw.memsize and df -h /.
+About the older Windows machine
+
+This one's a bit more involved. To join a Windows machine to a k3s cluster, you need a Linux kernel first. A few options:
+
+Most recommended: wipe the Windows machine and install Ubuntu directly (if you no longer need to run Windows software on it) — the cleanest approach, closest to production, running k3s agent directly on bare metal with no virtualization overhead.
+If you want to keep Windows: you could run k3s agent under WSL2 (Windows's built-in Linux subsystem), but WSL2 is itself a layer of virtualization, and networking is a bit more finicky than native Linux (bridging WSL2's virtual NIC to the LAN, in particular, tends to be trickier than the Multipass bridging you did on the Mac).
+Or run VirtualBox/VMware on Windows with an Ubuntu VM inside it — same concept as what you're currently doing with Multipass on the Mac.
+Suggested order
+
+Send me the older Mac's specs first — that one will likely be quick to sort out using what we've already learned. The older Windows machine involves a bigger trade-off decision (wipe it for Ubuntu or not), so we can tackle that separately once you've decided.
+
+
+Last login: Sat Sep  5 20:00:29 on console
+ziqiao@ZIQIAOnoiMac ~ % sysctl -n machdep.cpu.brand_string
+Intel(R) Core(TM) i5-7360U CPU @ 2.30GHz
+ziqiao@ZIQIAOnoiMac ~ % sysctl -n hw.physicalcpu
+2
+ziqiao@ZIQIAOnoiMac ~ % sysctl -n hw.logicalcpu 
+4
+ziqiao@ZIQIAOnoiMac ~ % sysctl -n hw.memsize | awk '{print $1/1024/1024/1024 " GB"}'
+16 GB
+ziqiao@ZIQIAOnoiMac ~ % df -h /
+Filesystem       Size   Used  Avail Capacity iused     ifree %iused  Mounted on
+/dev/disk1s5s1  233Gi  8.7Gi   17Gi    34%  356882 178422360    0%   /
+ziqiao@ZIQIAOnoiMac ~ % top -l 1 | head -n 10
+Processes: 459 total, 2 running, 457 sleeping, 1721 threads 
+2026/09/05 20:07:28
+Load Avg: 6.62, 13.11, 8.46 
+CPU usage: 7.28% user, 19.86% sys, 72.84% idle 
+SharedLibs: 653M resident, 104M data, 59M linkedit.
+MemRegions: 194454 total, 2488M resident, 282M private, 1047M shared.
+PhysMem: 10G used (2231M wired, 0B compressor), 5769M unused.
+VM: 29T vsize, 3569M framework vsize, 0(0) swapins, 0(0) swapouts.
+Networks: packets: 670433/806M in, 158016/24M out.
+Disks: 227431/3558M read, 155447/5738M written.
+ziqiao@ZIQIAOnoiMac ~ %
+
+
+中文
+
+参数拿到了，但这台机器有两个地方需要先关注一下，不建议直接跳过去装：
+
+需要先留意的两点
+
+1. 可用磁盘只有17GB，这个偏紧张——磁盘总共233GB，但df -h /显示只有17GB可用（容量已用到34%），这跟你之前那台"86GB可用"的MacBook Pro差距很大。这台iMac上装的东西可能比想象中占地方多。建议先跑一下：
+
+bash
+du -sh /Users/* 2>/dev/null | sort -rh | head -10
+
+看看是不是有大文件/大文件夹能清理，17GB要装虚拟机+k3s+镜像缓存，会比较紧绷，几乎没有容错空间。
+
+2. Load Average偏高，跟CPU idle率不太匹配——Load Avg: 6.62, 13.11, 8.46在只有4个逻辑核心的机器上，这个数字不低（超过核心数就说明有排队等待的进程），但同时CPU usage又显示72.84% idle——这种"负载高但CPU看着很闲"的组合，通常意味着大量进程在等I/O（比如磁盘读写、Spotlight索引重建之类后台任务），不是CPU算力不够。建议先看一下：
+
+bash
+top -o cpu
+
+如果看到mds、mds_stores（Spotlight索引服务）占用很高，等它跑完索引，再装虚拟机，避免叠加负载。
+
+资源分配建议（在磁盘空间清理之后再定）
+
+这台i5-7360U是双核低功耗芯片（严格说是2013年代后的超低压移动U，性能明显弱于之前那台i7-8750H），加上磁盘紧张，建议这台机器分配得更保守，甚至可以考虑"只做无状态服务测试用途"，不承担Kafka/ES这种吃资源的有状态服务：
+
+项目	建议值	说明
+CPU	2核	逻辑核心的一半，双核机器不能再多分了
+内存	3GB	当前系统本身已经用了10GB(16GB里)，剩余可用只有5.6GB左右，给虚拟机太多会导致macOS本身开始交换分页
+磁盘	10GB	基于清理后重新确认的可用空间调整,这个数字先按最保守估算
+
+先跑上面两条排查命令，把结果发我，确认磁盘和负载没问题后，再给你最终的multipass launch命令。
+
+日本語(ふりがな付き)
+
+スペックは確認(かくにん)できましたが、二(ふた)つ気(き)になる点(てん)があるので、そのまま次(つぎ)に進(すす)むのはおすすめしません。
+
+先(さき)に確認(かくにん)すべき二(ふた)つのこと
+
+1. 空(あ)きディスクが17GBしかなく、これはやや厳(きび)しい——ディスク全体(ぜんたい)は233GBですが、df -h /では空(あ)き容量(ようりょう)が17GBしかありません(使用率(しようりつ)34%)。前回(ぜんかい)の「86GB空(あ)き」のMacBook Proとはかなり差(さ)があります。このiMacには思(おも)ったより容量(ようりょう)を食(く)っているものがあるかもしれません。先(さき)に以下(いか)を実行(じっこう)してみてください：
+
+bash
+du -sh /Users/* 2>/dev/null | sort -rh | head -10
+
+削除(さくじょ)できる大(おお)きなファイル/フォルダがないか確認(かくにん)しましょう。仮想(かそう)マシン+k3s+イメージキャッシュを17GBに詰(つ)め込(こ)むのはかなりタイトで、ほぼ余裕(よゆう)がありません。
+
+2. Load Average(負荷平均(ふかへいきん))が高(たか)く、CPUのidle率(りつ)と噛(か)み合(あ)っていない——Load Avg: 6.62, 13.11, 8.46は、論理(ろんり)コアが4(よん)個(こ)しかないマシンとしてはかなり高(たか)い数値(すうち)です(コア数(すう)を超(こ)えると、待機中(たいきちゅう)のプロセスがあるということ)。それなのにCPU usageは72.84% idleと表示(ひょうじ)されています——この「負荷(ふか)は高(たか)いのにCPUは暇(ひま)そう」という組(く)み合(あ)わせは、たいてい大量(たいりょう)のプロセスがI/O待(ま)ちになっていることを意味(いみ)します(ディスクの読(よ)み書(か)きや、Spotlightのインデックス再構築(さいこうちく)などのバックグラウンドタスク)。CPUの処理能力(しょりのうりょく)不足(ぶそく)ではありません。先(さき)に確認(かくにん)してみましょう：
+
+bash
+top -o cpu
+
+mdsやmds_stores(Spotlightのインデックスサービス)の使用率(しようりつ)が高(たか)ければ、インデックス処理(しょり)が終(お)わるのを待(ま)ってから仮想(かそう)マシンを入(い)れた方(ほう)が、負荷(ふか)が重(かさ)ならずに済(す)みます。
+
+リソース割(わ)り当(あ)て提案(ていあん)(ディスクの整理(せいり)後(ご)に確定(かくてい)しましょう)
+
+このi5-7360Uはデュアルコアの低消費電力(ていしょうひでんりょく)チップで(前回(ぜんかい)のi7-8750Hよりはっきり性能(せいのう)が劣(おと)ります)、加(くわ)えてディスクも厳(きび)しいので、このマシンにはより控(ひか)えめな割(わ)り当(あ)てをおすすめします。場合(ばあい)によっては「ステートレスサービスのテスト用途(ようと)のみ」として使(つか)い、Kafka/ESのようなリソースを食(く)うステートフルサービスは担当(たんとう)させない、という選択肢(せんたくし)も考(かんが)えられます：
+
+項目(こうもく)	推奨値(すいしょうち)	説明(せつめい)
+CPU	2コア	論理(ろんり)コアの半分(はんぶん)。デュアルコアマシンなのでこれ以上(いじょう)は割(わ)り当(あ)てられません
+メモリ	3GB	現在(げんざい)すでにシステム自体(じたい)が16GB中(ちゅう)10GBを使用(しよう)しており、残(のこ)りの空(あ)きは5.6GBほどしかありません。仮想(かそう)マシンに多(おお)く割(わ)り当(あ)てすぎるとmacOS本体(ほんたい)がスワップを始(はじ)めてしまいます
+ディスク	10GB	整理後(せいりご)に確認(かくにん)した空(あ)き容量(ようりょう)を基準(きじゅん)に調整(ちょうせい)。ひとまず最(もっと)も控(ひか)えめな見積(みつ)もりです
+
+まず上(うえ)の二(ふた)つの確認(かくにん)コマンドを実行(じっこう)し、結果(けっか)を送(おく)ってください。ディスクと負荷(ふか)に問題(もんだい)がないことを確認(かくにん)してから、最終的(さいしゅうてき)なmultipass launchコマンドをお伝(つた)えします。
+
+English
+
+Got the specs, but there are two things worth checking before jumping straight into setup — I wouldn't skip past these.
+
+Two things to look at first
+
+1. Only 17GB free disk — that's tight. Total disk is 233GB, but df -h / shows only 17GB available (34% used). That's a big gap from the 86GB free on your other MacBook Pro. Something on this iMac is taking up more space than you'd expect. Worth checking first:
+
+bash
+du -sh /Users/* 2>/dev/null | sort -rh | head -10
+
+to see if there's anything large you can clean up. Squeezing a VM + k3s + image cache into 17GB is going to be tight, with almost no margin for error.
+
+2. Load average is high and doesn't match the CPU idle percentage. Load Avg: 6.62, 13.11, 8.46 is fairly elevated for a machine with only 4 logical cores (exceeding core count means processes are queued waiting). But CPU usage shows 72.84% idle at the same time — that combination of "high load but CPU looks idle" usually means a lot of processes are waiting on I/O (disk reads/writes, or background tasks like Spotlight reindexing), not that the CPU itself is maxed out. Worth checking:
+
+bash
+top -o cpu
+
+If you see mds or mds_stores (Spotlight's indexing service) using a lot, better to let it finish indexing before adding a VM on top, so the loads don't stack.
+
+Resource allocation recommendation (finalize after disk cleanup)
+
+This i5-7360U is a dual-core, low-power chip (noticeably weaker than the i7-8750H on the other machine), and combined with the tight disk, I'd recommend being more conservative here — even consider using this node only for stateless-service testing, not taking on resource-hungry stateful services like Kafka/ES:
+
+Resource	Suggested	Notes
+CPU	2 cores	Half the logical cores — this dual-core machine can't spare more
+Memory	3GB	The system's already using 10GB of the 16GB total, leaving only ~5.6GB free; over-allocating to the VM will push macOS itself into swapping
+Disk	10GB	Adjust based on confirmed free space after cleanup — this is the most conservative estimate for now
+
+Run those two diagnostic commands first and send me the results — once we confirm disk and load are okay, I'll give you the final multipass launch command.
+
+
+中文
+
+清理后数据好看多了：磁盘从17GB提升到133GB可用，负载也从6.62降到1.32、CPU idle率93.77%——之前那个"高负载低CPU占用"的现象确认是索引/清理相关的临时抖动，现在已经恢复正常，可以放心继续。
+
+不过内存这块还是提醒一句：PhysMem显示12G used（比之前还略高一点），4515M unused——16GB里可用不到5GB，虚拟机内存还是建议保守分配，避免macOS本体因为内存压力变卡。
+
+资源分配（更新版）
+项目	建议值	说明
+CPU	2核	双核机器，最多也只能给这么多
+内存	3GB	当前可用内存有限，给太多会挤压macOS本体
+磁盘	20GB	磁盘空间已经充裕，可以比之前保守估计的10GB略宽松一点
+启动虚拟机（这台机器要重复一遍完整流程）
+
+第一步：装Multipass（这是一台新机器，需要重新装一遍）
+
+bash
+brew install --cask multipass
+
+如果又报command not found: brew，按之前教过的排查ls /usr/local/bin/brew，缺了就重装Homebrew。
+
+第二步：查这台iMac的网卡名
+
+bash
+multipass networks
+
+Wi-Fi接口大概率还是en0，但保险起见先确认一遍，不同Mac可能不一样。
+
+第三步：设置桥接网络 + 启动虚拟机（版本保持26.04跟其他两个node对齐）
+
+bash
+multipass set local.bridged-network=en0
+multipass launch 26.04 --name k3s-node3 --cpus 2 --memory 3G --disk 20G --bridged
+
+第四步：进虚拟机确认拿到桥接IP、跟ziqiao-asm100互通
+
+bash
+multipass shell k3s-node3
+ip addr show    # 记下桥接网卡名字和IP，跟之前node2的坑一样，这里必须显式记录
+ping 192.168.40.23
+
+第五步：拿token，join集群时显式指定node-ip和flannel-iface（避免重蹈node2最初选错网卡的坑，<接口名>和<IP>换成第四步查到的）
+
+bash
+curl -sfL https://get.k3s.io | K3S_URL=https://192.168.40.23:6443 K3S_TOKEN=<之前的token> INSTALL_K3S_EXEC="--node-ip=<IP> --flannel-iface=<接口名>" sh -
+
+先跑第一、二步，把multipass networks的结果发我确认一下网卡名再继续。
+
+日本語(ふりがな付き)
+
+整理後(せいりご)のデータはかなり良好(りょうこう)です：ディスクは17GBから133GB空(あ)きに増(ふ)えました、負荷(ふか)も6.62から1.32に下(さ)がり、CPUのidle率(りつ)は93.77%——さきほどの「負荷(ふか)は高(たか)いのにCPU使用率(しようりつ)は低(ひく)い」という現象(げんしょう)は、インデックス作成(さくせい)や整理(せいり)関連(かんれん)の一時的(いちじてき)な揺(ゆ)らぎだったことが確認(かくにん)できました。今(いま)はもう正常(せいじょう)に戻(もど)っているので、安心(あんしん)して進(すす)められます。
+
+ただメモリについては一言(ひとこと)注意(ちゅうい)しておきます：PhysMemは12G used(以前(いぜん)よりやや高(たか)め)、4515M unusedと表示(ひょうじ)されています——16GB中(ちゅう)使(つか)える空(あ)きは5GB弱(じゃく)なので、仮想(かそう)マシンのメモリはやはり控(ひか)えめに割(わ)り当(あ)てた方(ほう)がよく、macOS本体(ほんたい)がメモリ圧迫(あっぱく)で重(おも)くなるのを避(さ)けましょう。
+
+リソース割(わ)り当(あ)て(更新版(こうしんばん))
+項目(こうもく)	推奨値(すいしょうち)	説明(せつめい)
+CPU	2コア	デュアルコアマシンなので、これ以上(いじょう)は割(わ)り当(あ)てられません
+メモリ	3GB	現在(げんざい)の空(あ)きメモリが限(かぎ)られているので、多(おお)く割(わ)り当(あ)てるとmacOS本体(ほんたい)を圧迫(あっぱく)します
+ディスク	20GB	ディスク容量(ようりょう)にはすでに余裕(よゆう)があるので、以前(いぜん)の控(ひか)えめな10GBより少(すこ)し多(おお)めにできます
+仮想(かそう)マシンを起動(きどう)する(このマシンでも一連(いちれん)の流(なが)れを繰(く)り返(かえ)します)
+
+ステップ1：Multipassをインストールする(新(あたら)しいマシンなので、改(あらた)めてインストールが必要(ひつよう)です)
+
+bash
+brew install --cask multipass
+
+もし再(ふたた)びcommand not found: brewと出(で)たら、以前(いぜん)教(おし)えた通(とお)りls /usr/local/bin/brewで確認(かくにん)し、なければHomebrewを再(さい)インストールしてください。
+
+ステップ2：このiMacのネットワークインターフェース名(めい)を確認(かくにん)する
+
+bash
+multipass networks
+
+Wi-Fiインターフェースはおそらくen0のままですが、Macによって異(こと)なる可能性(かのうせい)もあるので、念(ねん)のため確認(かくにん)しておきましょう。
+
+ステップ3：ブリッジネットワークを設定(せってい)し、仮想(かそう)マシンを起動(きどう)する(バージョンは他(ほか)の二(ふた)つのノードと揃(そろ)えて26.04のまま)
+
+bash
+multipass set local.bridged-network=en0
+multipass launch 26.04 --name k3s-node3 --cpus 2 --memory 3G --disk 20G --bridged
+
+ステップ4：仮想(かそう)マシンに入(はい)って、ブリッジIPが取得(しゅとく)できているか、ziqiao-asm100と疎通(そつう)するか確認(かくにん)する
+
+bash
+multipass shell k3s-node3
+ip addr show    # ブリッジインターフェースの名前とIPをメモしておく。前回(ぜんかい)のnode2と同(おな)じ落(お)とし穴(あな)を避(さ)けるため、ここは必(かなら)ず明示的(めいじてき)に記録(きろく)すること
+ping 192.168.40.23
+
+ステップ5：tokenを取得(しゅとく)し、クラスターにjoinする際(さい)、node-ipとflannel-ifaceを明示的(めいじてき)に指定(してい)する(node2で最初(さいしょ)にインターフェースを間違(まちが)えた失敗(しっぱい)を繰(く)り返(かえ)さないため。<インターフェース名>と<IP>はステップ4で確認(かくにん)したものに置(お)き換(か)えてください)
+
+bash
+curl -sfL https://get.k3s.io | K3S_URL=https://192.168.40.23:6443 K3S_TOKEN=<前回(ぜんかい)のtoken> INSTALL_K3S_EXEC="--node-ip=<IP> --flannel-iface=<インターフェース名>" sh -
+
+まずステップ1、2を実行(じっこう)し、multipass networksの結果(けっか)を送(おく)ってインターフェース名(めい)を確認(かくにん)してから次(つぎ)に進(すす)みましょう。
+
+English
+
+Much better after cleanup: disk went from 17GB to 133GB free, and load dropped from 6.62 to 1.32 with CPU idle at 93.77% — confirming that earlier "high load, low CPU usage" pattern was just temporary indexing/cleanup noise. Everything's back to normal now, safe to proceed.
+
+One note on memory though: PhysMem shows 12G used (slightly higher than before) and 4515M unused — with less than 5GB free out of 16GB, still worth being conservative on VM memory allocation to avoid macOS itself getting sluggish under memory pressure.
+
+Resource allocation (updated)
+Resource	Suggested	Notes
+CPU	2 cores	Dual-core machine — this is the max you can spare
+Memory	3GB	Free memory is limited right now; more would squeeze macOS itself
+Disk	20GB	Disk has plenty of headroom now, a bit more generous than the earlier conservative 10GB estimate
+Launching the VM (repeat the full flow on this machine)
+
+Step 1: Install Multipass (new machine, needs installing again)
+
+bash
+brew install --cask multipass
+
+If you get command not found: brew again, check ls /usr/local/bin/brew like before, and reinstall Homebrew if it's missing.
+
+Step 2: Check this iMac's network interface name
+
+bash
+multipass networks
+
+The Wi-Fi interface is probably still en0, but worth confirming since it can vary by Mac.
+
+Step 3: Set the bridged network and launch the VM (keep version 26.04 to match your other two nodes):
+
+bash
+multipass set local.bridged-network=en0
+multipass launch 26.04 --name k3s-node3 --cpus 2 --memory 3G --disk 20G --bridged
+
+Step 4: Get into the VM and confirm it got a bridged IP, and can reach ziqiao-asm100
+
+bash
+multipass shell k3s-node3
+ip addr show    # note the bridged interface name and IP — avoiding the same trap as node2, this must be recorded explicitly
+ping 192.168.40.23
+
+Step 5: Get the token, and explicitly specify node-ip and flannel-iface when joining (to avoid repeating node2's original wrong-interface mistake — replace <interface-name> and <IP> with what you found in step 4):
+
+bash
+curl -sfL https://get.k3s.io | K3S_URL=https://192.168.40.23:6443 K3S_TOKEN=<the earlier token> INSTALL_K3S_EXEC="--node-ip=<IP> --flannel-iface=<interface-name>" sh -
+
+Run steps 1 and 2 first, and send me the multipass networks output to confirm the interface name before continuing.
+
+
+Last login: Sat Sep  5 20:05:13 on ttys000
+ziqiao@ZIQIAOnoiMac ~ % multipass networks
+Name   Type       Description
+en0    ethernet   Ethernet
+en1    wifi       Wi-Fi
+ziqiao@ZIQIAOnoiMac ~ % 
+
+用Wi-Fi这个
+
+中文
+
+注意到了——这台iMac跟之前那台MacBook Pro不一样：这里en0是有线以太网，Wi-Fi是en1。这正是我之前提醒"不同Mac可能不一样"的原因，如果照抄之前的en0就会桥接到错误的（甚至可能没插网线、根本不通的）接口。
+
+按你的选择，用en1：
+
+bash
+multipass set local.bridged-network=en1
+multipass launch 26.04 --name k3s-node3 --cpus 2 --memory 3G --disk 20G --bridged
+
+起完之后进去确认桥接IP和网卡名（这台机器内部的网卡命名规则大概率还是ensX这种，但具体是哪个要重新查，不能直接沿用node2的ens4）：
+
+bash
+multipass shell k3s-node3
+ip addr show
+ping 192.168.40.23
+
+把ip addr show的结果发我，确认一下IP和接口名再进行下一步join集群。
+
+日本語(ふりがな付き)
+
+気(き)づきました——このiMacは前回(ぜんかい)のMacBook Proとは違(ちが)います：ここではen0が有線(ゆうせん)イーサネットで、Wi-Fiはen1です。これはまさに以前(いぜん)「Macによって異(こと)なる可能性(かのうせい)がある」と注意(ちゅうい)した理由(りゆう)です。もし前回(ぜんかい)のen0をそのまま使(つか)ってしまうと、間違(まちが)ったインターフェース(下手(へた)をすればケーブルすら繋(つな)がっていない、通信(つうしん)できないインターフェース)にブリッジしてしまうところでした。
+
+ご希望(きぼう)通(とお)り、en1を使(つか)います：
+
+bash
+multipass set local.bridged-network=en1
+multipass launch 26.04 --name k3s-node3 --cpus 2 --memory 3G --disk 20G --bridged
+
+起動後(きどうご)、中(なか)に入(はい)ってブリッジIPとインターフェース名(めい)を確認(かくにん)してください(このマシン内部(ないぶ)のインターフェース命名規則(めいめいきそく)もおそらくensXのような形式(けいしき)ですが、具体的(ぐたいてき)にどれかは改(あらた)めて確認(かくにん)する必要(ひつよう)があり、node2のens4をそのまま流用(りゅうよう)することはできません)：
+
+bash
+multipass shell k3s-node3
+ip addr show
+ping 192.168.40.23
+
+ip addr showの結果(けっか)を送(おく)ってください。IPとインターフェース名(めい)を確認(かくにん)してから、次(つぎ)のクラスターjoinステップに進(すす)みましょう。
+
+English
+
+Good catch — this iMac is different from the MacBook Pro: here en0 is wired Ethernet, and Wi-Fi is en1. This is exactly why I flagged earlier that "it can vary by Mac" — if you'd just reused the previous en0, you'd have bridged to the wrong interface (possibly not even connected to anything).
+
+Going with en1 as you chose:
+
+bash
+multipass set local.bridged-network=en1
+multipass launch 26.04 --name k3s-node3 --cpus 2 --memory 3G --disk 20G --bridged
+
+Once it's up, get in and confirm the bridged IP and interface name (the interface naming inside this VM will likely follow the same ensX pattern, but which specific one it is needs to be checked fresh — don't just reuse node2's ens4):
+
+bash
+multipass shell k3s-node3
+ip addr show
+ping 192.168.40.23
+
+Send me the ip addr show output so we confirm the IP and interface name before moving on to joining the cluster.
+
+
+multipass launch 26.04 --name k3s-node3 --cpus 2 --memory 3G --disk 20G --bridged
+[2026-09-05T20:23:12.195] [error] [qemu-img] Process crashed
+launch failed: Failed to amend image to QCOW2 v3: qemu-img failed (program: qemu-img; error: Process crashed) with output:
+
+中文
+
+这个报错不是你操作的问题——查了一下，这是Multipass在部分老款Intel Mac上的已知问题：qemu-img这个工具在处理镜像格式转换（QCOW2 v3）时进程直接崩溃了，跟macOS版本较老、或者下载的镜像缓存损坏有关系，Multipass官方GitHub上有相同报错的公开issue,目前还没有官方修复,只能靠绕过。
+
+先排查：macOS版本
+bash
+sw_vers
+
+如果这台iMac的macOS版本比较旧（比如还停留在Big Sur/Monterey这类），Multipass新版本内置的qemu-img可能对旧系统的兼容性本身就有问题——这跟机器"老"直接相关,不是配置错误。
+
+第一步尝试：清掉可能损坏的镜像缓存，重新下载
+bash
+multipass delete k3s-node3 --purge 2>/dev/null   # 如果残留了失败的实例，先清掉
+sudo rm -rf "/var/root/Library/Caches/multipassd/qemu/vault/images"
+
+清完后重新跑一次launch命令，看是不是下载缓存损坏导致的。
+
+第二步：如果还是崩，重装Multipass本体
+bash
+brew uninstall --cask multipass
+brew install --cask multipass
+
+新版本二进制本身修复过这个bug的可能性也有,先试试。
+
+第三步：如果以上都不行——这台老Mac可能就是不适合跑Multipass/QEMU
+
+如果这台iMac的macOS版本确实很老,遇到的是已知的、社区还没修复的兼容性问题，与其继续在这台机器上死磕，不如考虑：这台机器改用VirtualBox（对老系统兼容性通常更好），或者干脆认为它更适合承担"轻量无状态服务测试"而不是"当k3s node"这个更重的任务。
+
+先跑sw_vers把系统版本发我，再试第一步清缓存，两步都做了告诉我结果。
+
+日本語(ふりがな付き)
+
+このエラーはあなたの操作(そうさ)の問題(もんだい)ではありません——調(しら)べたところ、**これは一部(いちぶ)の古(ふる)いIntel Macで発生(はっせい)するMultipassの既知(きち)の問題(もんだい)**です。qemu-imgというツールが画像(がぞう)フォーマット変換(へんかん)(QCOW2 v3)を処理(しょり)する際(さい)にプロセスがクラッシュしてしまうもので、macOSのバージョンが古(ふる)いことや、ダウンロードしたイメージキャッシュが破損(はそん)していることが原因(げんいん)として関係(かんけい)しています。Multipass公式(こうしき)GitHubにも同(おな)じエラーが報告(ほうこく)されているissueがありますが、今(いま)のところ公式(こうしき)の修正(しゅうせい)はまだなく、回避策(かいひさく)で対応(たいおう)するしかない状況(じょうきょう)です。
+
+まず確認(かくにん)：macOSのバージョン
+bash
+sw_vers
+
+このiMacのmacOSバージョンが古(ふる)い場合(ばあい)(例(たと)えばBig SurやMontereyあたりで止(と)まっている場合(ばあい))、Multipassの新(あたら)しいバージョンに内蔵(ないぞう)されているqemu-img自体(じたい)が、古(ふる)いシステムとの互換性(ごかんせい)に問題(もんだい)を抱(かか)えている可能性(かのうせい)があります——これはマシンが「古(ふる)い」こと自体(じたい)に直接(ちょくせつ)関係(かんけい)しており、設定(せってい)ミスではありません。
+
+ステップ1：破損(はそん)している可能性(かのうせい)のあるイメージキャッシュを削除(さくじょ)して再(さい)ダウンロード
+bash
+multipass delete k3s-node3 --purge 2>/dev/null   # 失敗(しっぱい)したインスタンスが残(のこ)っていれば先(さき)に削除(さくじょ)
+sudo rm -rf "/var/root/Library/Caches/multipassd/qemu/vault/images"
+
+削除後(さくじょご)、もう一度(いちど)launchコマンドを実行(じっこう)して、ダウンロードキャッシュの破損(はそん)が原因(げんいん)だったかどうか確認(かくにん)しましょう。
+
+ステップ2：それでもクラッシュする場合(ばあい)、Multipass本体(ほんたい)を再(さい)インストールする
+bash
+brew uninstall --cask multipass
+brew install --cask multipass
+
+新(あたら)しいバージョンのバイナリでこのバグが修正(しゅうせい)されている可能性(かのうせい)もあるので、まず試(ため)してみましょう。
+
+ステップ3：それでもダメな場合(ばあい)——この古(ふる)いMac自体(じたい)がMultipass/QEMUに向(む)いていない可能性(かのうせい)
+
+もしこのiMacのmacOSバージョンが本当(ほんとう)に古(ふる)く、コミュニティでもまだ修正(しゅうせい)されていない既知(きち)の互換性問題(ごかんせいもんだい)に当(あ)たっているのであれば、このマシンで無理(むり)に粘(ねば)るより、このマシンだけVirtualBoxに切(き)り替(か)える(古(ふる)いシステムとの互換性(ごかんせい)は一般的(いっぱんてき)にVirtualBoxの方(ほう)が良好(りょうこう)な傾向(けいこう)があります)か、あるいは思(おも)い切(き)って「k3sノードを担当(たんとう)させる」という重(おも)いタスクではなく「軽量(けいりょう)なステートレスサービスのテスト用途(ようと)」に回(まわ)す方(ほう)が適(てき)しているかもしれません。
+
+まずsw_versを実行(じっこう)してシステムバージョンを送(おく)ってください。それからステップ1のキャッシュ削除(さくじょ)を試(ため)してみて、両方(りょうほう)やった結果(けっか)を教(おし)えてください。
+
+English
+
+This error isn't something you did wrong — I looked into it, and it's a known issue with Multipass on some older Intel Macs: qemu-img, the tool handling image format conversion (to QCOW2 v3), crashes outright. It's tied to older macOS versions or a corrupted downloaded image cache. There's an open GitHub issue on Multipass's official repo with the exact same error string, and it's currently unresolved upstream — so this needs a workaround for now.
+
+First, check the macOS version
+bash
+sw_vers
+
+If this iMac is running an older macOS (say, still on Big Sur or Monterey), the qemu-img bundled with newer Multipass versions may simply have compatibility problems with older systems — this is directly tied to the machine's age, not a config mistake.
+
+Step 1: Clear the potentially corrupted image cache and re-download
+bash
+multipass delete k3s-node3 --purge 2>/dev/null   # clean up the failed instance if it's still lingering
+sudo rm -rf "/var/root/Library/Caches/multipassd/qemu/vault/images"
+
+Then re-run the launch command to see if a corrupted download cache was the cause.
+
+Step 2: If it still crashes, reinstall Multipass itself
+bash
+brew uninstall --cask multipass
+brew install --cask multipass
+
+There's a chance a newer binary has this fixed — worth trying.
+
+Step 3: If none of this works — this older Mac may just not be a great fit for Multipass/QEMU
+
+If this iMac's macOS is genuinely old and you're hitting this known, community-unresolved compatibility issue, rather than fighting it further on this machine, consider either: switching just this machine to VirtualBox (generally better compatibility with older systems), or accepting that it's better suited to lightweight stateless-service testing rather than the heavier job of running a k3s node.
+
+Run sw_vers first and send me the system version, then try step 1's cache clear, and let me know the results of both.
+
+
+ziqiao@ZIQIAOnoiMac ~ % sw_vers
+ProductName: macOS
+ProductVersion: 13.7.8
+BuildVersion: 22H730
+ziqiao@ZIQIAOnoiMac ~ %
+
+
+中文
+
+Ventura 13.7.8——这个版本本身不算特别老（是Ventura系列里打到最新补丁的版本），所以大概率不是"系统版本太老导致的根本性不兼容"，更可能是这次GitHub issue里提到的"镜像下载缓存损坏"或者"多版本qemu-img冲突"这类偶发问题，值得先按前面的步骤排查，不用一上来就放弃Multipass换VirtualBox。
+
+继续排查
+
+第一步：清掉缓存重试
+
+bash
+multipass delete k3s-node3 --purge 2>/dev/null
+sudo rm -rf "/var/root/Library/Caches/multipassd/qemu/vault/images"
+multipass launch 26.04 --name k3s-node3 --cpus 2 --memory 3G --disk 20G --bridged
+
+如果还是崩，看一下版本号，确认是不是这次GitHub issue命中的那个版本区间：
+
+bash
+multipass version
+
+把结果发我。
+
+如果清缓存没用，试一下重装Multipass：
+
+bash
+brew uninstall --cask multipass
+brew install --cask multipass
+
+这几步做完告诉我结果，如果依然崩溃，再考虑要不要换VirtualBox这条路。
+
+日本語(ふりがな付き)
+
+Ventura 13.7.8——このバージョン自体(じたい)はそこまで古(ふる)くありません(Venturaシリーズの中(なか)で最新(さいしん)のパッチまで当(あ)たっているバージョンです)。なので**「システムバージョンが古(ふる)すぎることによる根本的(こんぽんてき)な非互換性(ひごかんせい)」の可能性(かのうせい)は低(ひく)く**、前回(ぜんかい)のGitHub issueで触(ふ)れられていた「ダウンロードしたイメージキャッシュの破損(はそん)」や「複数(ふくすう)バージョンのqemu-imgの競合(きょうごう)」といった偶発的(ぐうはつてき)な問題(もんだい)の可能性(かのうせい)が高(たか)いです。まずは前回(ぜんかい)のステップに沿(そ)って確認(かくにん)する価値(かち)があり、いきなりMultipassを諦(あきら)めてVirtualBoxに切(き)り替(か)える必要(ひつよう)はありません。
+
+続(つづ)けて確認(かくにん)しましょう
+
+ステップ1：キャッシュを削除(さくじょ)して再試行(さいしこう)
+
+bash
+multipass delete k3s-node3 --purge 2>/dev/null
+sudo rm -rf "/var/root/Library/Caches/multipassd/qemu/vault/images"
+multipass launch 26.04 --name k3s-node3 --cpus 2 --memory 3G --disk 20G --bridged
+
+それでもクラッシュする場合(ばあい)、バージョン番号(ばんごう)を確認(かくにん)して、今回(こんかい)のGitHub issueが該当(がいとう)するバージョン範囲(はんい)かどうか確認(かくにん)しましょう：
+
+bash
+multipass version
+
+結果(けっか)を送(おく)ってください。
+
+キャッシュ削除(さくじょ)で効(き)かない場合(ばあい)、Multipassを再(さい)インストールしてみてください：
+
+bash
+brew uninstall --cask multipass
+brew install --cask multipass
+
+これらを試(ため)した結果(けっか)を教(おし)えてください。それでもまだクラッシュするなら、そのときにVirtualBoxへの切(き)り替(か)えを検討(けんとう)しましょう。
+
+English
+
+Ventura 13.7.8 — this version itself isn't particularly old (it's on the latest patch within the Ventura series), so it's probably not a fundamental incompatibility from an outdated OS version. It's more likely one of the intermittent issues mentioned in that GitHub issue — a corrupted image download cache or conflicting qemu-img versions. Worth troubleshooting with the earlier steps first, no need to jump straight to abandoning Multipass for VirtualBox.
+
+Let's continue troubleshooting
+
+Step 1: Clear the cache and retry
+
+bash
+multipass delete k3s-node3 --purge 2>/dev/null
+sudo rm -rf "/var/root/Library/Caches/multipassd/qemu/vault/images"
+multipass launch 26.04 --name k3s-node3 --cpus 2 --memory 3G --disk 20G --bridged
+
+If it still crashes, check the version to see if it falls in the range mentioned in that GitHub issue:
+
+bash
+multipass version
+
+Send me the result.
+
+If clearing the cache doesn't help, try reinstalling Multipass:
+
+bash
+brew uninstall --cask multipass
+brew install --cask multipass
+
+Let me know how these go — if it's still crashing after all this, we can consider whether to switch to VirtualBox.
+
+
+
+ziqiao@ZIQIAOnoiMac ~ % multipass launch 26.04 --name k3s-node3 --cpus 2 --memory 3G --disk 20G --bridged
+[2026-09-05T20:28:24.716] [error] [qemu-img] Process crashed
+launch failed: Failed to amend image to QCOW2 v3: qemu-img failed (program: qemu-img; error: Process crashed) with output:
+
+ziqiao@ZIQIAOnoiMac ~ % multipass version
+multipass   1.16.3+mac
+multipassd  1.16.3+mac
+ziqiao@ZIQIAOnoiMac ~ %
+
+
+
+中文
+
+查到这个报错从2022年到2026年5月这几年间反复被报告，一直没有官方修复，你手头这个1.16.3版本大概率也踩中了同一个坑——单纯清缓存/重装大概率也解决不了根本问题，不用再浪费时间反复试了。
+
+更靠谱的路子：换掉Multipass底层用的虚拟化驱动
+
+Multipass本身支持切换不同的虚拟化后端，默认在macOS上用QEMU（就是现在崩溃的这个），但也支持切到VirtualBox作为驱动——不需要放弃Multipass这套命令行工具，只是换个底层引擎，命令行操作方式完全不变。
+
+第一步：装VirtualBox
+
+bash
+brew install --cask virtualbox
+
+（如果这一步提示需要在"系统设置→隐私与安全性"里手动允许Oracle的驱动加载，跑完安装后去点一下"允许"，这是VirtualBox在macOS上的标准安装步骤）
+
+第二步：把Multipass的驱动切到VirtualBox
+
+bash
+multipass set local.driver=virtualbox
+
+第三步：重新launch，命令完全不变
+
+bash
+multipass launch 26.04 --name k3s-node3 --cpus 2 --memory 3G --disk 20G --bridged
+
+如果这次能正常起来，说明问题确实出在QEMU这个驱动本身在你这台机器上的兼容性,换引擎就绕过去了,后续所有操作(shell、网络配置等)命令都不用变。
+
+先跑第一、二步，然后重新launch,把结果发我。
+
+日本語(ふりがな付き)
+
+このエラーは2022年から2026年5月まで、何年(なんねん)にもわたって繰(く)り返(かえ)し報告(ほうこく)されていることがわかりました。公式(こうしき)の修正(しゅうせい)はまだなく、あなたが使(つか)っているこの1.16.3バージョンも同(おな)じ問題(もんだい)に当(あ)たっている可能性(かのうせい)が高(たか)いです——単純(たんじゅん)にキャッシュ削除(さくじょ)や再(さい)インストールを繰(く)り返(かえ)しても根本的(こんぽんてき)には解決(かいけつ)しない可能性(かのうせい)が高(たか)いので、これ以上(いじょう)同(おな)じ方法(ほうほう)で時間(じかん)を使(つか)う必要(ひつよう)はありません。
+
+より確実(かくじつ)な方法(ほうほう):Multipassの内部(ないぶ)で使(つか)う仮想化(かそうか)ドライバーを切(き)り替(か)える
+
+Multipassは異(こと)なる仮想化(かそうか)バックエンドに切(き)り替(か)えることをサポートしています。macOSではデフォルトでQEMU(今回(こんかい)クラッシュしているもの)を使(つか)いますが、VirtualBoxをドライバーとして使(つか)うこともできます——Multipassというコマンドラインツール自体(じたい)を手放(てばな)す必要(ひつよう)はなく、裏側(うらがわ)のエンジンを変(か)えるだけで、コマンドの使(つか)い方(かた)は一切(いっさい)変(か)わりません。
+
+ステップ1：VirtualBoxをインストールする
+
+bash
+brew install --cask virtualbox
+
+(このステップで「システム設定(せってい)→プライバシーとセキュリティ」でOracleのドライバー読(よ)み込(こ)みを手動(しゅどう)で許可(きょか)するよう求(もと)められたら、インストール後(ご)に「許可(きょか)」をクリックしてください。これはmacOSでのVirtualBoxの標準的(ひょうじゅんてき)なインストール手順(てじゅん)です)
+
+ステップ2：Multipassのドライバーを VirtualBoxに切(き)り替(か)える
+
+bash
+multipass set local.driver=virtualbox
+
+ステップ3：コマンドはまったく変(か)えずに再(さい)launchする
+
+bash
+multipass launch 26.04 --name k3s-node3 --cpus 2 --memory 3G --disk 20G --bridged
+
+これで正常(せいじょう)に起動(きどう)できれば、問題(もんだい)は本当(ほんとう)にQEMUというドライバー自体(じたい)がこのマシンで互換性(ごかんせい)の問題(もんだい)を起(お)こしていたということが確定(かくてい)し、エンジンを変(か)えることで回避(かいひ)できたことになります。以降(いこう)のすべての操作(そうさ)(shell、ネットワーク設定(せってい)など)のコマンドは変(か)える必要(ひつよう)がありません。
+
+まずステップ1、2を実行(じっこう)し、再(さい)launchしてみて、結果(けっか)を送(おく)ってください。
+
+English
+
+Turns out this error has been reported repeatedly across years, from 2022 through as recently as May 2026 — with no official fix. The 1.16.3 version you're on is likely hitting the exact same unresolved bug — clearing the cache or reinstalling probably won't fix the root cause, so no need to keep repeating those steps.
+
+A more reliable path: switch Multipass's underlying virtualization driver
+
+Multipass supports switching between different virtualization backends — on macOS it defaults to QEMU (the one currently crashing), but it also supports VirtualBox as a driver. You don't need to give up the Multipass CLI at all — just swap the engine underneath, and every command stays exactly the same.
+
+Step 1: Install VirtualBox
+
+bash
+brew install --cask virtualbox
+
+(If this prompts you to manually allow Oracle's kernel extension in System Settings → Privacy & Security, click "Allow" after installation — that's a standard VirtualBox install step on macOS.)
+
+Step 2: Switch Multipass's driver to VirtualBox
+
+bash
+multipass set local.driver=virtualbox
+
+Step 3: Re-launch with the exact same command
+
+bash
+multipass launch 26.04 --name k3s-node3 --cpus 2 --memory 3G --disk 20G --bridged
+
+If this launches successfully, it confirms the issue really was QEMU's compatibility with this specific machine, and switching engines routed around it — every subsequent command (shell, network config, etc.) stays unchanged.
+
+Run steps 1 and 2, re-launch, and send me the result.
+
+
+
+Last login: Sat Sep  5 20:36:33 2026 from 10.0.2.2
+ubuntu@k3s-node3:~$ ip addr show
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host noprefixroute 
+       valid_lft forever preferred_lft forever
+2: enp0s3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP group default qlen 1000
+    link/ether 52:54:00:6f:19:af brd ff:ff:ff:ff:ff:ff
+    altname enx5254006f19af
+    inet 10.0.2.15/24 metric 100 brd 10.0.2.255 scope global dynamic enp0s3
+       valid_lft 86281sec preferred_lft 86281sec
+    inet6 fd17:625c:f037:2:5054:ff:fe6f:19af/64 scope global dynamic mngtmpaddr noprefixroute 
+       valid_lft 86282sec preferred_lft 14282sec
+    inet6 fe80::5054:ff:fe6f:19af/64 scope link proto kernel_ll 
+       valid_lft forever preferred_lft forever
+3: enp0s8: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP group default qlen 1000
+    link/ether 52:54:00:a1:ae:12 brd ff:ff:ff:ff:ff:ff
+    altname enx525400a1ae12
+    inet 192.168.40.14/24 metric 200 brd 192.168.40.255 scope global dynamic enp0s8
+       valid_lft 43082sec preferred_lft 43082sec
+    inet6 2405:1201:1189:9d00::ef4b:3c22/128 scope global dynamic noprefixroute 
+       valid_lft 604682sec preferred_lft 604682sec
+    inet6 2405:1201:1189:9d00:5054:ff:fea1:ae12/64 scope global dynamic mngtmpaddr noprefixroute 
+       valid_lft 604767sec preferred_lft 604767sec
+    inet6 fe80::5054:ff:fea1:ae12/64 scope link proto kernel_ll 
+       valid_lft forever preferred_lft forever
+ubuntu@k3s-node3:~$ 
+
+ubuntu@k3s-node3:~$ ping 192.168.40.23
+PING 192.168.40.23 (192.168.40.23) 56(84) bytes of data.
+64 bytes from 192.168.40.23: icmp_seq=1 ttl=64 time=179 ms
+64 bytes from 192.168.40.23: icmp_seq=2 ttl=64 time=193 ms
+64 bytes from 192.168.40.23: icmp_seq=3 ttl=64 time=410 ms
+64 bytes from 192.168.40.23: icmp_seq=4 ttl=64 time=203 ms
+64 bytes from 192.168.40.23: icmp_seq=5 ttl=64 time=107 ms
+64 bytes from 192.168.40.23: icmp_seq=6 ttl=64 time=100 ms
+64 bytes from 192.168.40.23: icmp_seq=7 ttl=64 time=147 ms
+64 bytes from 192.168.40.23: icmp_seq=8 ttl=64 time=135 ms
+64 bytes from 192.168.40.23: icmp_seq=9 ttl=64 time=203 ms
+64 bytes from 192.168.40.23: icmp_seq=10 ttl=64 time=411 ms
+64 bytes from 192.168.40.23: icmp_seq=11 ttl=64 time=7.26 ms
+
+
+
+中文
+
+VirtualBox这条路走通了，换驱动确实绕开了那个QEMU的bug。网络也确认没问题——enp0s8是桥接网卡，IP192.168.40.14，能ping通ziqiao-asm100。
+
+延迟波动（7ms到410ms之间跳）比之前两台机器还要明显一些，这台走的也是Wi-Fi桥接（en1），加上这台iMac本身性能更弱，抖动大一点符合预期，不影响继续，跟之前提醒的一样，后面Kafka/ES如果报超时可以回来想到这里。
+
+继续join集群
+
+用之前的token,这次接口换成enp0s8,IP换成192.168.40.14：
+
+bash
+curl -sfL https://get.k3s.io | K3S_URL=https://192.168.40.23:6443 K3S_TOKEN=K10b83f017fef5f2d6039263d7511bcfdd8e8e8f5756ce8a239c6415c27e3cc7d4a::server:a1c7fc408341059628237e2267ed0df0 INSTALL_K3S_EXEC="--node-ip=192.168.40.14 --flannel-iface=enp0s8" sh -
+验证
+
+回到ziqiao-asm100：
+
+bash
+kubectl get nodes -o wide
+
+这次应该能看到三个node，都是Ready。确认后可以顺手跑一遍之前的busybox测试，验证node3的跨节点网络也通：
+
+bash
+kubectl run test-node3 --image=busybox --overrides='{"spec":{"nodeSelector":{"kubernetes.io/hostname":"k3s-node3"}}}' --command -- sleep 3600
+kubectl get pod test-node3 -o wide
+
+把结果发我。
+
+日本語(ふりがな付き)
+
+VirtualBoxの方法(ほうほう)でうまくいきました——ドライバーを切(き)り替(か)えることで、確(たし)かにあのQEMUのバグを回避(かいひ)できました。ネットワークも問題(もんだい)ないことが確認(かくにん)できています——enp0s8がブリッジ用(よう)のインターフェースで、IPは192.168.40.14、ziqiao-asm100にpingが通(とお)っています。
+
+遅延(ちえん)の揺(ゆ)らぎ(7msから410msまで)は前(まえ)の二台(にだい)より少(すこ)し大(おお)きめですが、このマシンもWi-Fiブリッジ(en1)経由(けいゆ)で、しかもこのiMac自体(じたい)の性能(せいのう)が弱(よわ)いので、揺(ゆ)らぎが大(おお)きめなのは想定内(そうていない)です。続(つづ)けることに問題(もんだい)はありません。前(まえ)に伝(つた)えた通(とお)り、今後(こんご)Kafka/ESでタイムアウトが出(で)たら、ここを思(おも)い出(だ)してください。
+
+クラスターへのjoinを続(つづ)ける
+
+前回(ぜんかい)のtokenを使(つか)い、今回(こんかい)はインターフェースをenp0s8、IPを192.168.40.14に変更(へんこう)します：
+
+bash
+curl -sfL https://get.k3s.io | K3S_URL=https://192.168.40.23:6443 K3S_TOKEN=K10b83f017fef5f2d6039263d7511bcfdd8e8e8f5756ce8a239c6415c27e3cc7d4a::server:a1c7fc408341059628237e2267ed0df0 INSTALL_K3S_EXEC="--node-ip=192.168.40.14 --flannel-iface=enp0s8" sh -
+確認(かくにん)
+
+ziqiao-asm100に戻(もど)って：
+
+bash
+kubectl get nodes -o wide
+
+今回(こんかい)は三(みっ)つのノードが見(み)え、すべてReadyになっているはずです。確認(かくにん)できたら、前回(ぜんかい)と同(おな)じくbusyboxのテストを実行(じっこう)し、node3のノード間(かん)ネットワークも問題(もんだい)ないか確認(かくにん)しましょう：
+
+bash
+kubectl run test-node3 --image=busybox --overrides='{"spec":{"nodeSelector":{"kubernetes.io/hostname":"k3s-node3"}}}' --command -- sleep 3600
+kubectl get pod test-node3 -o wide
+
+結果(けっか)を送(おく)ってください。
+
+English
+
+VirtualBox worked — switching drivers did route around that QEMU bug. Networking checks out too — enp0s8 is the bridged interface, IP 192.168.40.14, and it's reaching ziqiao-asm100.
+
+The latency jitter (bouncing between 7ms and 410ms) is a bit more pronounced than the other two machines, but this one's also on Wi-Fi bridging (en1), and this iMac is weaker hardware, so more jitter is expected — no issue continuing. As mentioned before, if Kafka/ES throws timeouts later, this is worth remembering.
+
+Continue joining the cluster
+
+Using the same token as before, this time with interface enp0s8 and IP 192.168.40.14:
+
+bash
+curl -sfL https://get.k3s.io | K3S_URL=https://192.168.40.23:6443 K3S_TOKEN=K10b83f017fef5f2d6039263d7511bcfdd8e8e8f5756ce8a239c6415c27e3cc7d4a::server:a1c7fc408341059628237e2267ed0df0 INSTALL_K3S_EXEC="--node-ip=192.168.40.14 --flannel-iface=enp0s8" sh -
+Verify
+
+Back on ziqiao-asm100:
+
+bash
+kubectl get nodes -o wide
+
+You should now see three nodes, all Ready. Once confirmed, run the busybox test again to verify node3's cross-node networking too:
+
+bash
+kubectl run test-node3 --image=busybox --overrides='{"spec":{"nodeSelector":{"kubernetes.io/hostname":"k3s-node3"}}}' --command -- sleep 3600
+kubectl get pod test-node3 -o wide
+
+Send me the results.
+
+
+ziqiao@ziqiao-ASM100:/etc/rancher/k3s$ kubectl get pod test-node3 -o wide
+NAME         READY   STATUS    RESTARTS   AGE   IP          NODE        NOMINATED NODE   READINESS GATES
+test-node3   1/1     Running   0          18s   10.42.5.3   k3s-node3   <none>           <none>
+ziqiao@ziqiao-ASM100:/etc/rancher/k3s$ kubectl get nodes -o wide
+NAME            STATUS   ROLES           AGE     VERSION        INTERNAL-IP     EXTERNAL-IP   OS-IMAGE           KERNEL-VERSION             CONTAINER-RUNTIME
+k3s-node2       Ready    <none>          71m     v1.36.4+k3s1   192.168.40.69   <none>        Ubuntu 26.04 LTS   7.0.0-30-generic (amd64)   containerd://2.3.4-k3s1.36
+k3s-node3       Ready    <none>          2m37s   v1.36.4+k3s1   192.168.40.14   <none>        Ubuntu 26.04 LTS   7.0.0-30-generic (amd64)   containerd://2.3.4-k3s1.36
+ziqiao-asm100   Ready    control-plane   42d     v1.36.2+k3s1   192.168.40.23   <none>        Ubuntu 26.04 LTS   7.0.0-29-generic (amd64)   containerd://2.3.2-k3s2
+
+
+中文
+
+三节点集群完整搭建成功——node2、node3都是Ready，test-node3也正常Running，跨节点网络确认没问题。老MacBook Pro用QEMU、老iMac用VirtualBox两种不同驱动都能正常work，这也算意外收获——你亲身体会到了Multipass底层驱动可以按需切换这件事。
+
+收尾：清理测试Pod
+bash
+kubectl delete pod test-node2 test-node3
+现在手上有什么
+
+三个物理节点组成的集群，每个节点用的虚拟化路径还不太一样，值得记一笔：
+
+ziqiao-asm100：裸机直接跑k3s server（控制平面）
+k3s-node2：老MacBook Pro，通过Multipass+QEMU驱动跑的agent
+k3s-node3：老iMac，通过Multipass+VirtualBox驱动跑的agent
+接下来
+
+回到最初规划的伸缩练习清单——无状态服务的replicas扩缩容/podAntiAffinity/cordon-drain，现在可以在三个node间玩得更充分了（比如podAntiAffinity强制三副本分散到三个不同node，这个在两node时体验不完整）；Kafka/ES的"broker绑定node + local PV"设计也可以三个node都用上。
+
+要不要先从哪个开始练，还是先回到P6装监控？
+
+日本語(ふりがな付き)
+
+三(さん)ノードのクラスターが完全(かんぜん)に構築(こうちく)できました——node2、node3ともにReady、test-node3も正常(せいじょう)にRunningしており、ノード間(かん)ネットワークも問題(もんだい)なしと確認(かくにん)できました。古(ふる)いMacBook ProではQEMU、古(ふる)いiMacではVirtualBoxと、異(こと)なる二(ふた)つのドライバーがそれぞれ正常(せいじょう)に動(うご)いたのも、ある意味(いみ)思(おも)わぬ収穫(しゅうかく)ですね——Multipassのバックエンドドライバーが必要(ひつよう)に応(おう)じて切(き)り替(か)えられることを、身(み)をもって体験(たいけん)できました。
+
+仕上(しあ)げ：テスト用(よう)Podの削除(さくじょ)
+bash
+kubectl delete pod test-node2 test-node3
+今(いま)手元(てもと)にあるもの
+
+三(さん)つの物理(ぶつり)ノードで構成(こうせい)されたクラスターで、各(かく)ノードの仮想化(かそうか)経路(けいろ)がそれぞれ違(ちが)う、というのは記録(きろく)しておく価値(かち)があります：
+
+ziqiao-asm100：ベアメタルで直接(ちょくせつ)k3s server(コントロールプレーン)を実行(じっこう)
+k3s-node2：古(ふる)いMacBook Pro、Multipass+QEMUドライバーでagentを実行(じっこう)
+k3s-node3：古(ふる)いiMac、Multipass+VirtualBoxドライバーでagentを実行(じっこう)
+次(つぎ)にやること
+
+最初(さいしょ)に計画(けいかく)していたスケーリング練習(れんしゅう)のリストに戻(もど)りましょう——ステートレスサービスのreplicasスケーリング/podAntiAffinity/cordon-drainは、今(いま)なら三(みっ)つのノードでより充実(じゅうじつ)した形(かたち)で試(ため)せます(例(たと)えばpodAntiAffinityで3(さん)レプリカを三(みっ)つの異(こと)なるノードに強制分散(きょうせいぶんさん)させるのは、二(ふた)ノードの時(とき)には完全(かんぜん)に体験(たいけん)できませんでした)。Kafka/ESの「brokerをノードに固定(こてい)する+local PV」設計(せっけい)も三(みっ)つのノード全部(ぜんぶ)を使(つか)えます。
+
+どれから練習(れんしゅう)を始(はじ)めますか、それとも先(さき)にP6の監視(かんし)導入(どうにゅう)に戻(もど)りますか？
+
+English
+
+The three-node cluster is fully up and running — both node2 and node3 show Ready, test-node3 is Running correctly, and cross-node networking is confirmed working. As an unexpected bonus, you got QEMU working on the old MacBook Pro and VirtualBox working on the old iMac — a hands-on demonstration that Multipass's underlying driver can be swapped as needed.
+
+Wrap-up: clean up the test pods
+bash
+kubectl delete pod test-node2 test-node3
+What you've got now
+
+A three-physical-node cluster, each taking a different virtualization path — worth noting:
+
+ziqiao-asm100: bare metal running k3s server (control plane) directly
+k3s-node2: old MacBook Pro, agent via Multipass + QEMU driver
+k3s-node3: old iMac, agent via Multipass + VirtualBox driver
+What's next
+
+Back to the original scaling practice checklist — stateless service replicas scaling / podAntiAffinity / cordon-drain can now be exercised much more fully across three nodes (e.g., podAntiAffinity forcing three replicas onto three distinct nodes, which two nodes couldn't fully demonstrate). The Kafka/ES "broker pinned to node + local PV" design can also make use of all three nodes now.
+
+Want to start practicing one of those, or head back to P6 for monitoring setup?
