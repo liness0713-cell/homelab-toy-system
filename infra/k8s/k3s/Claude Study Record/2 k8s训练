@@ -1,0 +1,14 @@
+做了一份完整的三语演练手册，覆盖7个场景，从基础到进阶：
+
+准备工作 — 部署测试用nginx Deployment（3副本+Service）
+基础扩缩容 — scale命令 + 实时watch观察调度过程
+滚动更新/回滚 — set image/rollout status/rollout undo，观察"先加后减"的不中断机制
+Pod亲和性/反亲和性 — podAntiAffinity硬约束，特意演练"超过node数导致Pending"的失败场景
+nodeSelector + taint/toleration — 标签固定、污点隔离，两两配对讲解
+cordon/drain/uncordon — 完整节点下线流程，还设计了"drain撞上反亲和硬约束"的复合场景
+资源requests/limits — 故意起一个资源需求离谱的Pod制造调度失败，教你用describe的Events区分失败原因
+PodDisruptionBudget（进阶）— 让drain真的被拦下来，体会生产级别的保护机制
+
+每个场景都是"命令 → 命令说明 → 观察点"的结构，很多地方设计了"先看正常情况，再故意搞出一个失败场景"的对比,这样比单纯罗列命令更容易建立直觉。全程用同一个scaling-drill命名空间，做完了一次性kubectl delete namespace scaling-drill就能清干净。
+
+练完这一轮，再进入Kafka/ES这类有状态服务的node绑定+PV设计，会更有底气。
