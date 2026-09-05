@@ -527,3 +527,22 @@ https://kibana.homelab.local
 到这里为止，Kafka + kafka-ui + Elasticsearch + Kibana这一整套中间件基础设施就都搭起来了，而且这次全程走的是"CRD + Operator"这套K8s原生范式(Strimzi管Kafka，ECK管ES/Kibana)，local-storage这个StorageClass、每个组件独立打标签的PV(app: kafka/app: es)、Ingress暴露方式，这套架构模式在两个完全不同的中间件上跑通了两遍，说明这套思路是通用可复制的——以后如果再加别的有状态服务，基本可以照搬这个流程框架。
 
 浏览器打开确认一下能正常登录，如果一切顺利，这条基础设施搭建的主线就算告一段落了；如果登录或界面有任何异常，随时贴给我。
+
+
+# kibana ES的elastic账号密码，取的是我们之前从ECK自动生成的secret里读出来的那串
+kubectl create secret generic es-credentials \
+  -n toy-system \
+  --from-literal=ELASTICSEARCH_USERNAME=elastic \
+  --from-literal=ELASTICSEARCH_PASSWORD=pkPFLiFqJNTqZ5JiROHU7nhL
+
+
+取ES的登录密码
+bash
+kubectl get secret my-es-es-elastic-user -n toy-infra -o jsonpath='{.data.elastic}' | base64 -d
+echo
+pkPFLiFqJNTqZ5JiROHU7nhL
+
+账号
+elastic
+密码
+pkPFLiFqJNTqZ5JiROHU7nhL
