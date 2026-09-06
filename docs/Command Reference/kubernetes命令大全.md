@@ -59,11 +59,11 @@ kubectl get pods,svc,deploy,ingress -n <namespace>
 kubectl get all -n <namespace>           # 该 namespace 下大部分核心资源
 
 # describe：排障时最常用，比 get 信息详细得多，末尾的 Events 尤其关键
-kubectl describe pod <pod-name>
-kubectl describe svc <svc-name>
-kubectl describe node <node-name>
-kubectl describe deployment <deploy-name>
-kubectl describe ingress <ingress-name>
+kubectl describe pod <pod-name> -n <namespace>
+kubectl describe svc <svc-name> -n <namespace>
+kubectl describe node <node-name> -n <namespace>
+kubectl describe deployment <deploy-name> -n <namespace>
+kubectl describe ingress <ingress-name> -n <namespace>
 # 独立查events
 kubectl get events -n toy-system --field-selector involvedObject.name=<pod-name...>
 
