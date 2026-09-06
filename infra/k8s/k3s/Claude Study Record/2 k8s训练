@@ -12,3 +12,279 @@ PodDisruptionBudget（进阶）— 让drain真的被拦下来，体会生产级�
 每个场景都是"命令 → 命令说明 → 观察点"的结构，很多地方设计了"先看正常情况，再故意搞出一个失败场景"的对比,这样比单纯罗列命令更容易建立直觉。全程用同一个scaling-drill命名空间，做完了一次性kubectl delete namespace scaling-drill就能清干净。
 
 练完这一轮，再进入Kafka/ES这类有状态服务的node绑定+PV设计，会更有底气。
+
+ziqiao@ziqiao-ASM100:/etc/rancher/k3s$ kubectl get nodes -o wide
+NAME            STATUS   ROLES           AGE   VERSION        INTERNAL-IP     EXTERNAL-IP   OS-IMAGE           KERNEL-VERSION             CONTAINER-RUNTIME
+k3s-node2       Ready    <none>          35h   v1.36.4+k3s1   192.168.40.69   <none>        Ubuntu 26.04 LTS   7.0.0-30-generic (amd64)   containerd://2.3.4-k3s1.36
+k3s-node3       Ready    <none>          34h   v1.36.4+k3s1   192.168.40.14   <none>        Ubuntu 26.04 LTS   7.0.0-30-generic (amd64)   containerd://2.3.4-k3s1.36
+ziqiao-asm100   Ready    control-plane   43d   v1.36.2+k3s1   192.168.40.23   <none>        Ubuntu 26.04 LTS   7.0.0-29-generic (amd64)   containerd://2.3.2-k3s2
+ziqiao@ziqiao-ASM100:/etc/rancher/k3s$ ssh ubuntu@k3s-node2
+ssh: Could not resolve hostname k3s-node2: Temporary failure in name resolution
+ziqiao@ziqiao-ASM100:/etc/rancher/k3s$ ssh ubuntu@192.168.40.69
+The authenticity of host '192.168.40.69 (192.168.40.69)' can't be established.
+ED25519 key fingerprint is: SHA256:YwR4eNA2ncwau/8Qhlw3PGhcDYLWGKv9ozc9cToXY5w
+This key is not known by any other names.
+Are you sure you want to continue connecting (yes/no/[fingerprint])? yes
+Warning: Permanently added '192.168.40.69' (ED25519) to the list of known hosts.
+ubuntu@192.168.40.69: Permission denied (publickey).
+
+我想在1号机上连2,3号机该怎么办？那边ubuntu没有设置过密码
+
+中文
+
+这个不是"密码没设置"的问题，而是Ubuntu云镜像默认就禁用密码SSH登录，只允许密钥认证——所以就算给ubuntu用户设了密码，ssh默认还是会走公钥认证被拒。想从ziqiao-asm100免密登录进node2/node3，正确做法是把ziqiao-asm100的SSH公钥塞进这两台虚拟机的authorized_keys里。
+
+第一步：在ziqiao-asm100上生成一对密钥（如果还没有的话）
+bash
+ls ~/.ssh/id_ed25519.pub 2>/dev/null || ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
+cat ~/.ssh/id_ed25519.pub
+
+把这一行公钥内容复制下来。
+
+第二步：把这个公钥塞进node2和node3
+
+这一步不能从ziqiao-asm100直接操作（正是因为还没密钥,进不去)，得回到跑虚拟机的那两台Mac上,用multipass exec来注入：
+
+在跑node2的MacBook Pro上：
+
+bash
+multipass exec k3s-node2 -- bash -c 'mkdir -p ~/.ssh && echo "刚才复制的公钥内容" >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'
+
+在跑node3的iMac上：
+
+bash
+multipass exec k3s-node3 -- bash -c 'mkdir -p ~/.ssh && echo "刚才复制的公钥内容" >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'
+第三步：回到ziqiao-asm100验证
+bash
+ssh ubuntu@192.168.40.69   # node2
+ssh ubuntu@192.168.40.14   # node3
+
+这次应该能直接免密进去，不再提示Permission denied。
+
+顺带解决Could not resolve hostname这个问题
+
+这是因为/etc/hosts里没写这几个node的主机名映射,只能用IP连。方便以后不用记IP,可以在ziqiao-asm100上加一下：
+
+bash
+sudo tee -a /etc/hosts <<EOF
+192.168.40.69 k3s-node2
+192.168.40.14 k3s-node3
+EOF
+
+加完之后ssh ubuntu@k3s-node2就能直接用主机名了。
+
+日本語(ふりがな付き)
+
+これは「パスワードが設定(せってい)されていない」という問題(もんだい)ではなく、Ubuntuのクラウドイメージはデフォルトでパスワード認証(にんしょう)によるSSHログインを無効化(むこうか)しているからです。公開鍵認証(こうかいけんにんしょう)しか許可(きょか)されていません——なのでubuntuユーザーにパスワードを設定(せってい)しても、sshはデフォルトで公開鍵認証(こうかいけんにんしょう)を試(こころ)みて拒否(きょひ)されてしまいます。ziqiao-asm100からnode2/node3へパスワードなしでログインしたい場合(ばあい)、正(ただ)しいやり方(かた)はziqiao-asm100のSSH公開鍵(こうかいけん)をこの二(ふた)つの仮想(かそう)マシンのauthorized_keysに登録(とうろく)することです。
+
+ステップ1：ziqiao-asm100で鍵(かぎ)ペアを生成(せいせい)する(まだ持(も)っていなければ)
+bash
+ls ~/.ssh/id_ed25519.pub 2>/dev/null || ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
+cat ~/.ssh/id_ed25519.pub
+
+表示(ひょうじ)された公開鍵(こうかいけん)の一行(いちぎょう)をコピーしておきます。
+
+ステップ2：この公開鍵(こうかいけん)をnode2とnode3に登録(とうろく)する
+
+このステップはziqiao-asm100から直接(ちょくせつ)行(おこな)うことはできません(まさに鍵(かぎ)がまだないので入(はい)れないため)。仮想(かそう)マシンを動(うご)かしているそれぞれのMacに戻(もど)って、multipass execで注入(ちゅうにゅう)します：
+
+node2を動(うご)かしているMacBook Proで：
+
+bash
+multipass exec k3s-node2 -- bash -c 'mkdir -p ~/.ssh && echo "さきほどコピーした公開鍵の内容" >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'
+
+node3を動(うご)かしているiMacで：
+
+bash
+multipass exec k3s-node3 -- bash -c 'mkdir -p ~/.ssh && echo "さきほどコピーした公開鍵の内容" >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'
+ステップ3：ziqiao-asm100に戻(もど)って確認(かくにん)する
+bash
+ssh ubuntu@192.168.40.69   # node2
+ssh ubuntu@192.168.40.14   # node3
+
+今回(こんかい)はパスワードなしで直接(ちょくせつ)入(はい)れ、Permission deniedは出(で)ないはずです。
+
+ついでにCould not resolve hostnameの問題(もんだい)も解決(かいけつ)する
+
+これは/etc/hostsにこれらのノードのホスト名(めい)のマッピングが書(か)かれていないため、IPでしかアクセスできないからです。今後(こんご)IPを覚(おぼ)えなくて済(す)むように、ziqiao-asm100に追加(ついか)しておきましょう：
+
+bash
+sudo tee -a /etc/hosts <<EOF
+192.168.40.69 k3s-node2
+192.168.40.14 k3s-node3
+EOF
+
+これでssh ubuntu@k3s-node2のようにホスト名(めい)で直接(ちょくせつ)接続(せつぞく)できるようになります。
+
+English
+
+This isn't a "password wasn't set" issue — Ubuntu cloud images disable password-based SSH login by default, allowing only key-based authentication. So even if you set a password for the ubuntu user, ssh will default to trying public-key auth and get rejected. The correct way to get passwordless login from ziqiao-asm100 into node2/node3 is to add ziqiao-asm100's SSH public key to authorized_keys on both VMs.
+
+Step 1: Generate a key pair on ziqiao-asm100 (if you don't have one)
+bash
+ls ~/.ssh/id_ed25519.pub 2>/dev/null || ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
+cat ~/.ssh/id_ed25519.pub
+
+Copy this public key line.
+
+Step 2: Add this public key to node2 and node3
+
+This step can't be done directly from ziqiao-asm100 (exactly because you don't have key access yet). Go back to the two Macs running the VMs and inject it via multipass exec:
+
+On the MacBook Pro running node2:
+
+bash
+multipass exec k3s-node2 -- bash -c 'mkdir -p ~/.ssh && echo "the public key content you just copied" >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'
+
+On the iMac running node3:
+
+bash
+multipass exec k3s-node3 -- bash -c 'mkdir -p ~/.ssh && echo "the public key content you just copied" >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'
+Step 3: Verify from ziqiao-asm100
+bash
+ssh ubuntu@192.168.40.69   # node2
+ssh ubuntu@192.168.40.14   # node3
+
+Should now log in directly without a password, no more Permission denied.
+
+While we're at it, fixing the Could not resolve hostname issue
+
+This happens because /etc/hosts doesn't have entries mapping these node hostnames — only IPs work. So you don't have to remember IPs going forward, add this on ziqiao-asm100:
+
+bash
+sudo tee -a /etc/hosts <<EOF
+192.168.40.69 k3s-node2
+192.168.40.14 k3s-node3
+EOF
+
+After this, ssh ubuntu@k3s-node2 will work directly by hostname.
+
+讲一下这个命令，id_ed25519.pub 为什么用这个名字。没有私钥对不，是对称加密。
+
+第二命令其实在虚拟机内部执行了命令，其实可以进去直接执行的？
+
+中文
+
+两个问题都很有价值，一个是命名规则，一个是重要的概念纠正。
+
+关于id_ed25519.pub这个命名
+
+ssh-keygen -f ~/.ssh/id_ed25519里的-f指定的是私钥文件名id_ed25519（没有.pub后缀）。这条命令实际上会同时生成两个文件：
+
+~/.ssh/id_ed25519       ← 私钥（永远不能给任何人、任何机器）
+~/.ssh/id_ed25519.pub   ← 公钥（可以随便给别人、放到任何服务器上）
+
+你贴的命令里ls ~/.ssh/id_ed25519.pub只是检查公钥文件是否已存在（用来判断"要不要重新生成"），不代表只生成了公钥这一个文件——私钥id_ed25519（不带.pub）也在同一个文件夹里，只是检查语句里没提它而已。
+
+id_ed25519这个名字本身是SSH工具的默认命名惯例，不是你必须叫这个名字：id是identity的缩写，ed25519是算法名（Ed25519，一种现代椭圆曲线签名算法）。用别的算法生成时名字也会变，比如ssh-keygen -t rsa默认生成的就叫id_rsa/id_rsa.pub。
+
+纠正一个关键概念：这是非对称加密，不是对称加密
+
+你说"没有私钥对不，是对称加密"——这个理解反了，正好说反了两件事：
+
+确实有私钥，就是id_ed25519这个文件，跟公钥id_ed25519.pub是成对生成的，两者数学上绑定，缺一不可
+这套机制正是**非对称加密（asymmetric）**的典型应用，跟对称加密（symmetric，比如AES）是完全不同的两类算法：
+对称加密：加密和解密用同一把钥匙，双方必须提前共享这把钥匙,钥匙一旦泄露谁都能解密/伪造
+非对称加密：生成一对数学上关联但不同的密钥——公钥和私钥。公钥公开给所有人都没关系,私钥必须只有自己保留。SSH场景里,流程简化说是:服务器拿到你的公钥后存起来,你连接时用私钥做一次"数字签名",服务器用存着的公钥验证这个签名,验证通过就证明"发起连接的人确实持有对应的私钥",全程私钥不会被传输出去,即使公钥被所有人看到也没法伪造出私钥
+
+所以authorized_keys里存的是公钥，ziqiao-asm100本地的~/.ssh/id_ed25519是私钥，必须留在原地不要传输。这也是为什么第二条命令传输的是"公钥内容"而不是私钥内容,传私钥就等于把钥匙给了别人,完全违背了这套机制的安全设计初衷。
+
+关于multipass exec能不能换成进虚拟机内部直接执行
+
+完全可以，而且效果上没有区别。你可以选择：
+
+方案A（你现在用的）：multipass exec <虚拟机名> -- <命令>——从Mac的宿主终端直接对虚拟机"发号施令",不用真的进去,类似"隔着门缝递东西"
+
+方案B：先multipass shell k3s-node2进入虚拟机内部（就像之前你操作的那样），然后在虚拟机里直接敲：
+
+bash
+mkdir -p ~/.ssh
+echo "刚才复制的公钥内容" >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+exit    # 退出虚拟机,回到Mac宿主终端
+
+两种方式最终在虚拟机内部执行的命令、产生的文件结果完全一样。区别只是操作习惯：exec适合"一次性、简短"的命令,不用来回切换终端上下文;进去shell更适合"要连续敲好几条、需要看交互式输出"的场景。你这次只是三条命令一次搞定,用exec更顺手,但换成进去手动敲也完全没问题。
+
+日本語(ふりがな付き)
+
+どちらの質問(しつもん)も価値(かち)があります。一(ひと)つは命名規則(めいめいきそく)について、もう一(ひと)つは重要(じゅうよう)な概念(がいねん)の訂正(ていせい)です。
+
+id_ed25519.pubという命名(めいめい)について
+
+ssh-keygen -f ~/.ssh/id_ed25519の-fが指定(してい)しているのは秘密鍵(ひみつかぎ)のファイル名(めい)id_ed25519です(.pub拡張子(かくちょうし)はありません)。このコマンドは実際(じっさい)には二(ふた)つのファイルを同時(どうじ)に生成(せいせい)します：
+
+~/.ssh/id_ed25519       ← 秘密鍵(ひみつかぎ)(誰(だれ)にも、どのマシンにも絶対(ぜったい)に渡(わた)してはいけない)
+~/.ssh/id_ed25519.pub   ← 公開鍵(こうかいけん)(誰(だれ)に渡(わた)しても、どのサーバーに置(お)いても構(かま)わない)
+
+あなたが貼(は)ったコマンドのls ~/.ssh/id_ed25519.pubは公開鍵(こうかいけん)ファイルがすでに存在(そんざい)するかを確認(かくにん)するだけのもの(「再(さい)生成(せいせい)すべきか」を判断(はんだん)するため)で、公開鍵(こうかいけん)だけが生成(せいせい)されるという意味(いみ)ではありません——秘密鍵(ひみつかぎ)id_ed25519(.pubなし)も同(おな)じフォルダに存在(そんざい)しており、単(たん)にその確認(かくにん)コマンドで触(ふ)れていないだけです。
+
+id_ed25519という名前(なまえ)自体(じたい)はSSHツールの**デフォルトの命名慣習(めいめいかんしゅう)**であり、必(かなら)ずしもこの名前(なまえ)にしなければならないわけではありません。idはidentityの略(りゃく)、ed25519はアルゴリズム名(めい)(Ed25519、現代的(げんだいてき)な楕円曲線署名(だえんきょくせんしょめい)アルゴリズム)です。別(べつ)のアルゴリズムで生成(せいせい)すると名前(なまえ)も変(か)わります。例(たと)えばssh-keygen -t rsaのデフォルトはid_rsa/id_rsa.pubになります。
+
+重要(じゅうよう)な概念(がいねん)の訂正(ていせい)：これは**非対称暗号(ひたいしょうあんごう)**であり、対称暗号(たいしょうあんごう)ではありません
+
+「秘密鍵(ひみつかぎ)はないんですよね、対称暗号(たいしょうあんごう)ですよね」とおっしゃいましたが——この理解(りかい)は逆(ぎゃく)で、二(ふた)つのことが逆(ぎゃく)になっています：
+
+秘密鍵(ひみつかぎ)は確(たし)かに存在(そんざい)します。それがid_ed25519というファイルで、公開鍵(こうかいけん)id_ed25519.pubとペアで生成(せいせい)されます。両方(りょうほう)は数学的(すうがくてき)に結(むす)びついており、どちらか一方(いっぽう)だけでは意味(いみ)がありません
+この仕組(しく)みはまさに**非対称暗号(ひたいしょうあんごう)(asymmetric)**の典型的(てんけいてき)な応用(おうよう)であり、対称暗号(たいしょうあんごう)(symmetric、例(たと)えばAES)とはまったく異(こと)なる種類(しゅるい)のアルゴリズムです：
+対称暗号(たいしょうあんごう)：暗号化(あんごうか)と復号(ふくごう)に**同(おな)じ一(ひと)つの鍵(かぎ)**を使(つか)います。双方(そうほう)が事前(じぜん)にその鍵(かぎ)を共有(きょうゆう)しておく必要(ひつよう)があり、鍵(かぎ)が漏(も)れると誰(だれ)でも復号(ふくごう)/偽造(ぎぞう)できてしまいます
+非対称暗号(ひたいしょうあんごう)：数学的(すうがくてき)に関連(かんれん)しているが異(こと)なる鍵(かぎ)のペア——公開鍵(こうかいけん)と秘密鍵(ひみつかぎ)——を生成(せいせい)します。公開鍵(こうかいけん)は誰(だれ)に見(み)られても問題(もんだい)ありませんが、秘密鍵(ひみつかぎ)は自分(じぶん)だけが持(も)っている必要(ひつよう)があります。SSHの場合(ばあい)、簡単(かんたん)に言(い)うと:サーバーはあなたの公開鍵(こうかいけん)を受(う)け取(と)って保存(ほぞん)しておき、あなたが接続(せつぞく)する際(さい)に秘密鍵(ひみつかぎ)で一種(いっしゅ)の「デジタル署名(しょめい)」を行(おこな)い、サーバーは保存(ほぞん)している公開鍵(こうかいけん)でその署名(しょめい)を検証(けんしょう)します。検証(けんしょう)が通(とお)れば「接続(せつぞく)してきた人(ひと)は確(たし)かに対応(たいおう)する秘密鍵(ひみつかぎ)を持(も)っている」ことが証明(しょうめい)され、その過程(かてい)全体(ぜんたい)で秘密鍵(ひみつかぎ)自体(じたい)が送信(そうしん)されることはありません。たとえ公開鍵(こうかいけん)が全員(ぜんいん)に見(み)られても、それだけから秘密鍵(ひみつかぎ)を偽造(ぎぞう)することはできません
+
+なのでauthorized_keysに保存(ほぞん)されるのは公開鍵(こうかいけん)で、ziqiao-asm100のローカルにある~/.ssh/id_ed25519は秘密鍵(ひみつかぎ)で、絶対(ぜったい)にその場(ば)から動(うご)かさず送信(そうしん)してはいけません。これが、二(ふた)つ目(め)のコマンドで送信(そうしん)しているのが「公開鍵(こうかいけん)の内容(ないよう)」であって秘密鍵(ひみつかぎ)の内容(ないよう)ではない理由(りゆう)です。秘密鍵(ひみつかぎ)を送(おく)ってしまうことは、鍵(かぎ)そのものを他人(たにん)に渡(わた)すことと同(おな)じで、この仕組(しく)みのセキュリティ設計(せっけい)の目的(もくてき)に完全(かんぜん)に反(はん)してしまいます。
+
+multipass execを仮想(かそう)マシン内部(ないぶ)で直接(ちょくせつ)実行(じっこう)することに変(か)えられるか
+
+まったく問題(もんだい)ありません。結果(けっか)にも違(ちが)いはありません。以下(いか)のどちらでも選(えら)べます：
+
+方法(ほうほう)A(今(いま)使(つか)っているもの)：multipass exec <仮想マシン名> -- <コマンド>——Macのホスト側(がわ)のターミナルから仮想(かそう)マシンに直接(ちょくせつ)「命令(めいれい)を出(だ)す」もので、実際(じっさい)に中(なか)に入(はい)る必要(ひつよう)はなく、いわば「ドアの隙間(すきま)から物(もの)を渡(わた)す」ようなイメージです
+
+方法(ほうほう)B：まずmultipass shell k3s-node2で仮想(かそう)マシンの内部(ないぶ)に入(はい)り(以前(いぜん)あなたが操作(そうさ)したのと同(おな)じ方法(ほうほう))、仮想(かそう)マシンの中(なか)で直接(ちょくせつ)入力(にゅうりょく)します：
+
+bash
+mkdir -p ~/.ssh
+echo "さきほどコピーした公開鍵の内容" >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+exit    # 仮想マシンを抜けて、Macホスト側のターミナルに戻る
+
+二(ふた)つの方法(ほうほう)は、最終的(さいしゅうてき)に仮想(かそう)マシン内部(ないぶ)で実行(じっこう)されるコマンド、生成(せいせい)されるファイルの結果(けっか)はまったく同(おな)じです。違(ちが)いは操作(そうさ)の習慣(しゅうかん)だけです：execは「一回限(いっかいかぎ)りの、短(みじか)い」コマンドに向(む)いており、ターミナルのコンテキストを行(い)ったり来(き)たりせずに済(す)みます。一方(いっぽう)、中(なか)に入(はい)ってshellする方法(ほうほう)は「続(つづ)けていくつかのコマンドを打(う)つ必要(ひつよう)がある、対話的(たいわてき)な出力(しゅつりょく)を見(み)たい」場面(ばめん)により向(む)いています。今回(こんかい)はコマンド3(みっ)つで一気(いっき)に済(す)むのでexecの方(ほう)が手軽(てがる)ですが、中(なか)に入(はい)って手動(しゅどう)で打(う)つ方法(ほうほう)に変(か)えてもまったく問題(もんだい)ありません。
+
+English
+
+Both questions are good ones — one about naming convention, one an important concept to correct.
+
+About the name id_ed25519.pub
+
+The -f ~/.ssh/id_ed25519 in ssh-keygen -f ~/.ssh/id_ed25519 specifies the private key filename id_ed25519 (no .pub suffix). This command actually generates two files at once:
+
+~/.ssh/id_ed25519       ← private key (never give this to anyone or any machine)
+~/.ssh/id_ed25519.pub   ← public key (safe to give to anyone, put on any server)
+
+The ls ~/.ssh/id_ed25519.pub in the command you pasted was just checking whether the public key file already exists (to decide whether to regenerate) — it doesn't mean only the public key file gets created. The private key id_ed25519 (no .pub) lives in the same folder; it just wasn't mentioned in that check.
+
+The name id_ed25519 itself is just SSH's default naming convention, not something you're required to name it: id is short for "identity," and ed25519 is the algorithm name (Ed25519, a modern elliptic-curve signature algorithm). Using a different algorithm changes the name too — ssh-keygen -t rsa defaults to id_rsa/id_rsa.pub.
+
+Correcting a key concept: this is asymmetric encryption, not symmetric
+
+You said "there's no private key, right, it's symmetric encryption" — this has both parts backwards:
+
+There absolutely is a private key — the id_ed25519 file, generated as a pair with the public key id_ed25519.pub. The two are mathematically bound together; neither is useful without the other.
+This mechanism is a textbook application of asymmetric encryption, a completely different class of algorithm from symmetric encryption (like AES):
+Symmetric encryption: encryption and decryption use the same single key — both sides must share it in advance, and if that key leaks, anyone can decrypt or forge with it.
+Asymmetric encryption: generates a pair of mathematically related but different keys — a public key and a private key. The public key can be seen by anyone with no problem; the private key must stay with only its owner. In SSH's case, simplified: the server stores your public key, and when you connect, your private key produces a kind of "digital signature," which the server verifies against the stored public key. A successful verification proves "whoever's connecting genuinely holds the matching private key" — and at no point does the private key itself get transmitted. Even if everyone can see the public key, that alone can't be used to forge the private key.
+
+So authorized_keys stores the public key, while ~/.ssh/id_ed25519 on ziqiao-asm100 is the private key, which must stay put and never be transmitted. This is exactly why the second command sends "public key content," not the private key — sending the private key would be handing over the actual key to someone else, defeating the entire security purpose of this mechanism.
+
+About whether multipass exec could instead be done by going inside the VM
+
+Completely fine, and the outcome is identical either way. You can choose:
+
+Option A (what you're using): multipass exec <vm-name> -- <command> — issuing commands to the VM directly from the Mac's host terminal without actually entering it, like "passing things through a gap in the door"
+
+Option B: first multipass shell k3s-node2 to enter the VM (like you did before), then type directly inside the VM:
+
+bash
+mkdir -p ~/.ssh
+echo "the public key content you just copied" >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+exit    # exit the VM, back to the Mac's host terminal
+
+Both approaches produce exactly the same commands executed inside the VM and the same resulting files. The difference is just workflow preference: exec suits "one-off, short" commands without switching terminal contexts back and forth; going in with shell suits situations where you need to run several commands in sequence or want to see interactive output. Since this was just three commands done at once, exec is more convenient here, but switching to typing them manually inside the VM works just as well.
