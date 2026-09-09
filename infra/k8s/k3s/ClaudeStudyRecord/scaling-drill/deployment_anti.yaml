@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-anti
+  namespace: scaling-drill
+  labels:
+    app: web-anti
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web-anti
+  template:
+    metadata:
+      labels:
+        app: web-anti
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - web-anti
+            topologyKey: kubernetes.io/hostname
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
