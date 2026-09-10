@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pressure-test
+  namespace: scaling-drill
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: pressure-test
+  template:
+    metadata:
+      labels:
+        app: pressure-test
+    spec:
+      containers:
+      - name: stress
+        image: polinux/stress
+        command: ["stress"]
+        args: ["--cpu", "1", "--vm", "1", "--vm-bytes", "1500M"]
+        resources:
+          requests:
+            cpu: "1"
+            memory: "1500Mi"
