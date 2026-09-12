@@ -4,7 +4,7 @@ metadata:
   name: notification-service
   namespace: toy-system
 spec:
-  replicas: 1
+  replicas: 3
   selector:
     matchLabels:
       app: notification-service
