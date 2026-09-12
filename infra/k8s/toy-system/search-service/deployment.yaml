@@ -14,6 +14,11 @@ spec:
         app: search-service
     spec:
       terminationGracePeriodSeconds: 35
+      tolerations:
+        - key: "node-type"
+          operator: "Equal"
+          value: "low-power"
+          effect: "NoSchedule"
       containers:
         - name: search-service
           image: localhost:5000/search-service:202609020807-3805cc8

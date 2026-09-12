@@ -14,6 +14,11 @@ spec:
         app: notification-service
     spec:
       terminationGracePeriodSeconds: 35
+      tolerations:
+        - key: "node-type"
+          operator: "Equal"
+          value: "low-power"
+          effect: "NoSchedule"
       containers:
         - name: notification-service
           image: localhost:5000/notification-service:202608291813-b836314

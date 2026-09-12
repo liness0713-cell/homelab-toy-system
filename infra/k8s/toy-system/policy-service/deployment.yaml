@@ -14,6 +14,11 @@ spec:
         app: policy-service
     spec:
       terminationGracePeriodSeconds: 35
+      tolerations:
+        - key: "node-type"
+          operator: "Equal"
+          value: "low-power"
+          effect: "NoSchedule"
       containers:
         - name: policy-service
           image: localhost:5000/policy-service:202608291813-b836314
