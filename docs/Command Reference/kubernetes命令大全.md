@@ -278,6 +278,7 @@ kubectl describe node <node-name>          # 看资源余量（Allocatable）、
 kubectl top node                            # 需要 metrics-server，看实时资源占用
 kubectl top pod
 kubectl top pod -n <ns> --sort-by=cpu
+kubectl top pods -A --sort-by=memory
 
 # 驱逐 / 维护模式（做节点维护前的标准操作）
 kubectl cordon <node-name>                  # 标记不可调度，但不影响已在跑的 Pod
@@ -391,3 +392,16 @@ kubectl get events -A --sort-by='.lastTimestamp' | tail -30
 ---
 
 *生成于 2026-08-15，配合你的 P1-P11 k3s homelab 进度整理，建议存到你的 homelab 文档仓库里持续补充。*
+
+sudo crictl pull localhost:5000/search-service:202609020807-3805cc8
+# 这是让节点上的containerd直接去拉取（下载）这个镜像，不通过Kubernetes调度，用来单独验证"这台机器能不能连到你的私有镜像仓库"。
+逐段拆解：
+
+sudo —— crictl需要访问containerd的socket，一般要root权限
+crictl —— Kubernetes容器运行时的命令行工具（跟docker类似，但操作的是containerd/CRI-O这类底层runtime）
+pull —— 拉取镜像的子命令
+localhost:5000/search-service:202609020807-3805cc8 —— 镜像的完整地址：localhost:5000是仓库host（会被刚才配置的registries.yaml重定向到192.168.40.23:5000），search-service是镜像名，202609020807-3805cc8是tag（看起来是"时间戳+git commit短哈希"的自动生成tag）
+
+用它测试的好处是：跳过Pod调度、跳过Deployment，直接问containerd"你能不能连到仓库、下载到这个镜像"，把问题范围缩小到网络/镜像仓库这一层，排除掉K8s其他部分的干扰。
+
+如果拉取成功，会看到类似Image is up to date for sha256:...；如果失败，报错信息（比如connection refused、x509证书错误等）能直接告诉你是网络不通还是TLS配置的问题。
