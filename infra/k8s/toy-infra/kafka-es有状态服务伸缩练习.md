@@ -342,8 +342,8 @@ yaml
 命令说明：min.insync.replicas: 2这次可以放心设为2了（而不是2副本时保守的1）——3副本情况下,即使1个broker挂掉,剩下2个还能满足"至少2个确认写入"的要求,集群依然能正常写入,这正是quorum（多数派）容错的体现,允许1台故障还能撑住。
 
 bash
-kubectl apply -f kafkanodepool.yaml
-kubectl apply -f kafka.yaml
+kubectl apply -f /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-infra/kafka/kafka-nodepool.yaml
+kubectl apply -f /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-infra/kafka/kafka-cluster.yaml
 kubectl get pods -n toy-infra -o wide -w
 
 观察点：应该看到3个broker Pod分别落在ziqiao-asm100、k3s-node2、k3s-node3上。
@@ -354,9 +354,9 @@ yaml
     - name: default
       count: 3        # 从1改成3
 bash
-kubectl apply -f elasticsearch.yaml
+kubectl apply -f /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-infra/es/es-cluster.yaml
 kubectl get pods -n toy-infra -o wide -w
-第六步：验证quorum容错（这是3副本相比2副本最关键的新体验）
+第六步：验证 quorum 容错（这是3副本相比2副本最关键的新体验）
 
 Kafka这边——杀掉一个broker，看集群是否还能正常写入：
 
