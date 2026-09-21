@@ -44,3 +44,13 @@ spec:
               port: 8081
             initialDelaySeconds: 40
             periodSeconds: 20
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - policy-service    # 换成你实际的app标签值
+            topologyKey: kubernetes.io/hostname

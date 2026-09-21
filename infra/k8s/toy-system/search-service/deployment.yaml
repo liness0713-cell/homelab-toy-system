@@ -60,3 +60,13 @@ spec:
         - name: es-ca-cert
           secret:
             secretName: my-es-es-http-certs-public
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - search-service    # 换成你实际的app标签值
+            topologyKey: kubernetes.io/hostname

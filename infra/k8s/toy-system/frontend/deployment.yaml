@@ -23,3 +23,13 @@ spec:
           image: localhost:5000/frontend:202608291813-b836314
           ports:
             - containerPort: 80
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - frontend    # 换成你实际的app标签值
+            topologyKey: kubernetes.io/hostname
