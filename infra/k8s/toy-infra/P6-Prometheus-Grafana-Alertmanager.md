@@ -1503,3 +1503,42 @@ FLUSH PRIVILEGES;
 "
 
 密码记得跟你 .env 文件里 MYSQL_EXPORTER_PASSWORD 那个值保持一致，建完之后 mysqld-exporter 容器应该会自动重连成功（它本身有重试机制，不需要你手动重启它）。
+
+
+两个都是 1——重建 + 网络统一这轮操作彻底完成了
+
+中文：
+
+关键行都确认了：
+
+mysql_up 1
+redis_up 1
+
+mysql_version_info{...version="8.4.10"...} 也印证了这是刚重建的全新实例（mysql_global_status_uptime 之类的运行时间会很短，符合预期）。整个 exporter 链路——重建容器、统一网络、重开 exporter 账号权限——这几步全部验证通过。
+
+顺手总结一下这一段 P6 exporter 部分走过的完整链路，方便你之后回顾整理笔记时用：
+
+环节	关键坑
+4 个 Java 服务	Actuator 加一个依赖+一行配置就够
+nginx frontend	stub_status 只给 6 个数字，VTS 才能拉满，但复杂度陡增，最后选了折中：探针关日志、用户开日志、日志先本地存着不接采集
+Kafka JMX 规则	你贴的"官方版"比我最初给的更全面，用通用正则代替枚举，还专门覆盖了 KRaft 相关指标
+ES exporter	ECK 默认开 TLS+账号认证，两个都要配才能连上
+mysqld-exporter	DATA_SOURCE_NAME 已被官方废弃，改用 flag+新环境变量
+网络统一	两次不同目录执行 docker compose up 导致分裂成两个网络，根源是项目名默认取自目录名
+
+现在 MySQL、Redis、4 个 Java 服务、Kafka（Strimzi）、Elasticsearch（ECK） 这些指标源都已经能被 Prometheus 抓到了。下一步顺理成章是装 Prometheus 本身（去抓这些散落各处的 /metrics 端点）和 Grafana（把数据可视化），这两个装进 toy-infra namespace——如果你想继续往下推进,随时喊我。
+
+📝 mysql_up 1、redis_up 1——重要な行はすべて確認できました。mysql_version_infoにも新しいバージョン情報が出ており、これは再構築されたばかりの新規インスタンスであることの証拠です。今回のexporter一連の作業（コンテナ再構築、ネットワーク統一、exporterアカウント権限の再設定）はすべて検証済みです。
+
+💬 これでMySQL、Redis、4つのJavaサービス、Kafka（Strimzi）、Elasticsearch（ECK）——これらの指標源はすべてPrometheusが収集できる状態になりました。次のステップは自然にPrometheus本体（散らばった/metricsエンドポイントを収集する側）とGrafana（可視化する側）のインストールで、どちらもtoy-infranamespaceに入れます。続けたくなったらいつでも声をかけてください。
+
+English:
+
+Both key lines confirmed:
+
+mysql_up 1
+redis_up 1
+
+mysql_version_info also shows fresh version data consistent with the newly rebuilt instance. This full round — container rebuild, network unification, exporter account re-provisioning — is verified end to end.
+
+At this point MySQL, Redis, all 4 Java services, Kafka (Strimzi), and Elasticsearch (ECK) are all exposing metrics Prometheus can scrape. The natural next step is installing Prometheus itself (to actually scrape these scattered /metrics endpoints) and Grafana (to visualize them), both going into the toy-infra namespace — happy to keep going whenever you're ready.
