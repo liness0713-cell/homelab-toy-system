@@ -4,7 +4,7 @@ metadata:
   name: frontend
   namespace: toy-system
 spec:
-  replicas: 3
+  replicas: 1
   selector:
     matchLabels:
       app: frontend
@@ -23,6 +23,12 @@ spec:
           image: localhost:5000/frontend:202608291813-b836314
           ports:
             - containerPort: 80
+        - name: nginx-exporter
+          image: nginx/nginx-prometheus-exporter:1.1.0
+          args:
+            - -nginx.scrape-uri=http://127.0.0.1:8080/nginx_status
+          ports:
+            - containerPort: 9113
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:

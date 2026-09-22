@@ -338,6 +338,10 @@ kubectl run curl-test --rm -it --image=curlimages/curl --restart=Never -- sh
 
 bash
 curl http://gateway-service.toy-system.svc.cluster.local:8080/actuator/prometheus
+curl http://policy-service.toy-system.svc.cluster.local:8081/actuator/prometheus
+curl http://notification-service.toy-system.svc.cluster.local:8082/actuator/prometheus
+curl http://search-service.toy-system.svc.cluster.local:8083/actuator/prometheus
+
 
 如果 curl-test 这个临时 Pod 本身就在 toy-system namespace 里跑（默认会用 kubectl 当前 context 的 namespace，可以加 -n toy-system 指定），Service 短名也能用：
 
