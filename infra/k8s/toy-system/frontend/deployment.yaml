@@ -20,7 +20,7 @@ spec:
           effect: "NoSchedule"
       containers:
         - name: frontend
-          image: localhost:5000/frontend:202608291813-b836314
+          image: localhost:5000/frontend:202609221118-2693079
           ports:
             - containerPort: 80
         - name: nginx-exporter

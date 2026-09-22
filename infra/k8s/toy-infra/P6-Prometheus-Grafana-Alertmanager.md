@@ -527,3 +527,71 @@ Pod 重启、Pod 被删掉重建、镜像升级触发滚动更新——任何一
 /dev/stdout 这条不受影响，kubectl logs 永远能看到（虽然 Pod 重建后 kubectl logs 默认也只看当前 Pod 的，历史的还是要靠 Fluent Bit 之类真正采集走了才能跨 Pod 生命周期查）
 
 这个取舍现在完全没问题——你自己说了是"先这么放着"，等到 P8 真的接 EFK 的时候，/dev/stdout 这条线自然会被采集走、长期化，本地这份文件到时候甚至可以选择直接删掉这行 access_log 配置，因为已经不需要了。现在不用为这份"临时"文件的持久性纠结，先跑起来看效果就好。
+
+## nginx启动报错
+  Normal   Pulling    5m42s                  kubelet            spec.containers{nginx-exporter}: Pulling image "nginx/nginx-prometheus-exporter:1.1.0"
+  Normal   Pulled     5m37s                  kubelet            spec.containers{nginx-exporter}: Successfully pulled image "nginx/nginx-prometheus-exporter:1.1.0" in 5.709s (5.709s including waiting). Image size: 4386436 bytes.
+  Normal   Created    5m37s                  kubelet            spec.containers{nginx-exporter}: Container created
+  Normal   Started    5m36s                  kubelet            spec.containers{nginx-exporter}: Container started
+  Normal   Created    2m33s (x6 over 5m42s)  kubelet            spec.containers{frontend}: Container created
+  Normal   Started    2m33s (x6 over 5m42s)  kubelet            spec.containers{frontend}: Container started
+  Normal   Pulled     2m33s (x5 over 5m36s)  kubelet            spec.containers{frontend}: Container image "localhost:5000/frontend:202609221118-2693079" already present on machine and can be accessed by the pod
+  Warning  BackOff    22s (x8 over 5m35s)    kubelet            spec.containers{frontend}: Back-off restarting failed container frontend in pod frontend-657cf58574-2ndkh_toy-system(487cbb56-3db1-4b7e-8889-bc4671dbbf4b)
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/frontend$ kubectl logs frontend-657cf58574-2ndkh -n toy-system --tail 20
+Defaulted container "frontend" out of: frontend, nginx-exporter
+/docker-entrypoint.sh: /docker-entrypoint.d/ is not empty, will attempt to perform configuration
+/docker-entrypoint.sh: Looking for shell scripts in /docker-entrypoint.d/
+/docker-entrypoint.sh: Launching /docker-entrypoint.d/10-listen-on-ipv6-by-default.sh
+10-listen-on-ipv6-by-default.sh: info: Getting the checksum of /etc/nginx/conf.d/default.conf
+10-listen-on-ipv6-by-default.sh: info: /etc/nginx/conf.d/default.conf differs from the packaged version
+/docker-entrypoint.sh: Sourcing /docker-entrypoint.d/15-local-resolvers.envsh
+/docker-entrypoint.sh: Launching /docker-entrypoint.d/20-envsubst-on-templates.sh
+/docker-entrypoint.sh: Launching /docker-entrypoint.d/30-tune-worker-processes.sh
+/docker-entrypoint.sh: Configuration complete; ready for start up
+2026/09/22 02:26:05 [emerg] 1#1: "http" directive is not allowed here in /etc/nginx/conf.d/default.conf:1
+nginx: [emerg] "http" directive is not allowed here in /etc/nginx/conf.d/default.conf:1
+
+一句话诊断：官方 nginx 镜像的 default.conf 本身已经在 http{} 里面了，你又包了一层
+
+中文：
+
+官方 nginx:alpine（或类似基础镜像）自带的主配置文件 /etc/nginx/nginx.conf 长这样（简化版）：
+
+nginx
+http {
+    ...
+    include /etc/nginx/conf.d/*.conf;   # 关键在这里
+}
+
+也就是说，你自己写的那份配置文件，本身就已经处于 http{} 上下文里了——因为它是被 include 进 http{} 块内部的。你在自己的文件里又套了一层 http { ... }，等于 http{} 套 http{}，nginx 直接报错 "http" directive is not allowed here（因为 http 指令只能出现在最外层/main 上下文，不能嵌套在另一个 http 里面）。
+
+修法：把外层的 http { } 去掉，只留里面的内容——因为 log_format 指令本身合法的上下文正好就是 http{}，你的文件既然已经天然处在 http{} 里，直接把 log_format 和两个 server{} 块平铺写就行，不用再包一层：
+
+nginx
+log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                 '$status $body_bytes_sent "$http_referer" '
+                 '"$http_user_agent" $request_time';
+
+server {
+    listen 80;
+
+    access_log /var/log/nginx/access.log main;
+    access_log /dev/stdout main;
+
+    location / {
+        root /usr/share/nginx/html;
+        try_files $uri $uri/ /index.html;
+    }
+}
+
+server {
+    listen 127.0.0.1:8080;
+
+    access_log off;
+
+    location /nginx_status {
+        stub_status on;
+    }
+}
+
+改完重新打包镜像、重新部署就行。这个坑很典型：从零写一份独立的 nginx.conf（替换整个主配置文件）和只写一份放进 conf.d/ 目录（被主配置 include 进去）是两种完全不同的写法，前者必须自己包 http{}（还得包 events{} 等），后者不能包，因为外层已经帮你包好了。你的 Dockerfile 里 COPY 的目标路径是 /etc/nginx/conf.d/default.conf（从报错路径能看出来），所以属于第二种情况。
