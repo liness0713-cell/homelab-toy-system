@@ -169,7 +169,7 @@ spec:
         - name: es-exporter
           image: quay.io/prometheuscommunity/elasticsearch-exporter:v1.7.0
           args:
-            - --es.uri=http://elasticsearch-es-http:9200
+            - --es.uri=https://my-es-es-http.toy-infra.svc:9200
           ports:
             - containerPort: 9114
 ---
@@ -887,3 +887,619 @@ Strimzi Operator 检测到 Kafka CR 的 spec 变了(加了 metricsConfig),会对
 bash
 kubectl run curl-test --rm -it --image=curlimages/curl --restart=Never -n toy-infra -- \
   curl http://my-kafka-dual-role-0.my-kafka-kafka-brokers:9404/metrics
+
+## MBean 是什么？
+MBean：Java 应用暴露自己内部状态的标准化「探针」
+
+中文：
+
+MBean 全称 Managed Bean，是 Java 的 JMX（Java Management Extensions） 规范里定义的一种对象——你可以把它理解成：一个 Java 应用主动把自己内部的某个状态或指标,用标准化的格式"registrar 注册"出来,让外部工具能读取、甚至能调用。
+
+跟你这几天在做的事情直接挂钩： 你在改的那份 kafka-metrics-config.yml 里,规则形如：
+
+kafka.server<type=(.+), name=(.+)><>Value
+
+这个 kafka.server<type=xxx, name=yyy> 格式,就是在匹配一个具体 MBean 的名字。Kafka（一个 Java 应用）在运行时,会把"当前每秒进来多少消息""当前有几个 broker 连接"这类内部状态,各自包装成一个个 MBean,注册进 JVM 内置的 MBeanServer（可以理解成"这个 JVM 进程里所有 MBean 的登记处"）。JMX Exporter 这个 javaagent 做的事,就是连上这个 MBeanServer,把里面登记的 MBean 一个个读出来,按你 rules 里写的正则,转换成 Prometheus 格式对外暴露。
+
+打个比方帮你建立直觉：
+
+概念	类比
+JVM 进程	一栋大楼
+MBeanServer	大楼前台的登记簿
+一个 MBean	登记簿上的一条记录（比如"3楼A室,当前用电量 XX"）
+你的 rules 正则	你雇的人,拿着登记簿,按你定的规则把感兴趣的记录抄一份出来
+JMX Exporter	那个雇来的人本身
+
+一个自然会有的疑问,提前帮你解答：为什么 Kafka 这种非 Web 应用也有"接口"给你查？——因为 MBean 不是 HTTP 接口,是 JVM 层面的机制,任何 Java 程序（不管是不是提供 HTTP 服务的）,只要用了 JMX 规范,进程一启动就自动有这套"登记簿"存在,不需要开发者专门写一个 REST API 才能暴露这些内部数据——这也是为什么你的 4 个 Spring Boot 服务用 Actuator（本质是包了一层 HTTP 去读 JVM 自己的 MBean 数据）,而 Kafka 直接用 JMX Exporter（跳过 HTTP,直接读 MBeanServer）,两条路殊途同归。
+
+
+##
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/frontend$ kubectl logs elasticsearch-exporter-75fc95fbb8-8htd6 -n toy-infra --tail 20
+level=info ts=2026-09-22T08:23:10.137999983Z caller=clusterinfo.go:214 msg="triggering initial cluster info call"
+level=info ts=2026-09-22T08:23:10.138070313Z caller=clusterinfo.go:183 msg="providing consumers with updated cluster info label"
+level=error ts=2026-09-22T08:23:10.178622164Z caller=clusterinfo.go:267 msg="failed to get cluster info" err="Get \"https://my-es-es-http.toy-infra.svc:9200/\": tls: failed to verify certificate: x509: certificate signed by unknown authority"
+level=error ts=2026-09-22T08:23:10.178742365Z caller=clusterinfo.go:188 msg="failed to retrieve cluster info from ES" err="Get \"https://my-es-es-http.toy-infra.svc:9200/\": tls: failed to verify certificate: x509: certificate signed by unknown authority"
+level=info ts=2026-09-22T08:23:20.142349009Z caller=main.go:249 msg="initial cluster info call timed out"
+level=info ts=2026-09-22T08:23:20.143192907Z caller=tls_config.go:274 msg="Listening on" address=[::]:9114
+level=info ts=2026-09-22T08:23:20.143210719Z caller=tls_config.go:277 msg="TLS is disabled." http2=false address=[::]:9114
+
+典型的 ECK 特有坑：ES 默认自带 TLS，exporter 不认识 ECK 自签的 CA
+
+中文：
+
+这个报错跟你之前遇到的所有问题都不一样，值得说清楚背景：ECK（Elastic Cloud on Kubernetes）跟你自己手写 YAML 部署的 Kafka 不一样，它默认会自动给 ES 启用 HTTPS，并且自己生成一套自签名证书（self-signed CA）——这是 ECK 的"开箱即用安全"设计,不需要你手动配置就有加密传输。
+
+问题出在：elasticsearch-exporter 默认拿到 --es.uri=http://... 这种明文地址会直接连,但你的 ES 实际监听的是 https://my-es-es-http.toy-infra.svc:9200（日志里报错的 URL 本身已经是 https://,说明 exporter 其实已经在尝试连 HTTPS 了,可能是它自动探测到重定向,或者你配的本来就是 https）。exporter 连上后,ES 递给它的证书是 ECK 自己签发的,exporter 的容器里没有这个 CA 的证书,验证不通过,所以报 x509: certificate signed by unknown authority。
+
+修法分两步,先确认现状,再选方案：
+
+Step 1 — 确认 ECK 自动生成的 CA 证书在哪
+
+ECK 会自动创建一个 Secret,存着这套自签 CA,命名规则通常是 <集群名>-es-http-certs-public：
+
+bash
+kubectl get secret -n toy-infra | grep es-http-certs
+
+大概率能看到 my-es-es-http-certs-public(公钥/CA 部分)和 my-es-es-http-certs-internal(内部用,含私钥)。
+
+Step 2 — 两个方案二选一
+
+方案 A（推荐,更贴近真实做法）：把这个 CA 挂载进 exporter 容器,告诉它信任谁
+
+yaml
+containers:
+  - name: es-exporter
+    image: quay.io/prometheuscommunity/elasticsearch-exporter:v1.7.0
+    args:
+      - --es.uri=https://elastic:$(ES_PASSWORD)@my-es-es-http.toy-infra.svc:9200
+      - --es.ca=/certs/ca.crt
+    env:
+      - name: ES_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            name: my-es-es-elastic-user   # ECK自动生成的内置用户密码Secret
+            key: elastic
+    volumeMounts:
+      - name: es-ca
+        mountPath: /certs
+        readOnly: true
+volumes:
+  - name: es-ca
+    secret:
+      secretName: my-es-es-http-certs-public
+      items:
+        - key: ca.crt
+          path: ca.crt
+
+这里顺带说一个你可能还没配的点：ECK 默认不仅开 TLS,还会自动开用户认证（内置 elastic 用户,密码自动生成存在 <集群名>-es-elastic-user 这个 Secret 里）。如果你的 exporter 光解决了证书问题,没带认证信息,下一步大概率会报 401 Unauthorized,所以我把这部分也一起加上了——用 kubectl get secret my-es-es-elastic-user -n toy-infra -o jsonpath='{.data.elastic}' | base64 -d 能看到明文密码,确认一下 Secret 名字对不对（ECK 生成的 Secret 名字规则是 <集群名>-es-elastic-user,你的集群名如果不是 my-es,要相应改)。
+
+方案 B（图省事,但要知道代价）：跳过证书校验
+
+yaml
+args:
+  - --es.uri=https://elastic:$(ES_PASSWORD)@my-es-es-http.toy-infra.svc:9200
+  - --es.ssl-skip-verify
+
+这样能立刻跑起来,但本质上是关掉了中间人攻击防护——集群内部流量,风险确实很低,homelab 场景完全可以接受,只是要清楚这跟"配对证书"是两种不同性质的选择,不是"更简单的正确做法",而是"绕过问题"。
+
+建议：你已经在按"真实生产模式"练这套 homelab 了(前面 exporter、监控都是照生产标准来的),我建议方案 A——正好借这个机会体验一次"应用怎么信任一个自签 CA"这个在真实企业环境里也经常遇到的场景。
+
+
+差的就是这一句：证书挂载了，但没告诉 exporter 去用它
+
+中文：
+
+你这份配置有个很典型的"配置了但没生效"的坑：volumeMounts 把 CA 证书挂进了 /certs 目录，但 args 里从头到尾没有任何一行告诉 exporter "去 /certs 读证书"——elasticsearch-exporter 不会自动扫描挂载目录，必须显式传 --es.ca 参数指定路径，不传的话,这个证书文件对它来说就是摆在那没人用,跟没挂一样,所以照样报 unknown authority。
+
+另外一个你可能还没意识到的缺口：你提到 search-service 工作正常,这其实反过来证实了 ECK 确实开了用户认证——因为如果 ES 完全没启用认证, search-service 随便连都能通,不需要额外配置;它现在能正常工作,大概率是因为你的 Spring Boot 配置里（application.yml 或环境变量）已经带了 elastic 用户的用户名密码。而你这份 exporter 的 args 里完全没有认证信息,所以就算加上 --es.ca 解决了证书问题,大概率下一步会卡在 401 Unauthorized——建议这次一起补上,省得你再来回一趟。
+
+补全后的版本：
+
+yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: elasticsearch-exporter
+  namespace: toy-infra
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: es-exporter}
+  template:
+    metadata:
+      labels: {app: es-exporter}
+    spec:
+      containers:
+        - name: es-exporter
+          image: quay.io/prometheuscommunity/elasticsearch-exporter:v1.7.0
+          args:
+            - --es.uri=https://my-es-es-http.toy-infra.svc:9200
+            - --es.ca=/certs/ca.crt
+            - --es.ssl-skip-verify=false
+          env:
+            - name: ES_USERNAME
+              value: elastic
+            - name: ES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: my-es-es-elastic-user
+                  key: elastic
+          ports:
+            - containerPort: 9114
+          volumeMounts:
+            - name: es-ca-cert
+              mountPath: /certs
+              readOnly: true
+      volumes:
+        - name: es-ca-cert
+          secret:
+            secretName: my-es-es-http-certs-public
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch-exporter
+  namespace: toy-infra
+spec:
+  selector: {app: es-exporter}
+  ports:
+    - port: 9114
+
+两处改动说明：
+
+args 新增 --es.ca=/certs/ca.crt——my-es-es-http-certs-public 这个 Secret 里的 key 名字通常是 ca.crt（ECK 的固定命名习惯），可以先跑 kubectl get secret my-es-es-http-certs-public -n toy-infra -o jsonpath='{.data}' | jq keys 确认一下 key 名对不对，万一不叫 ca.crt，volumes.secret.items 那里也要对应改路径。
+新增 ES_USERNAME/ES_PASSWORD 环境变量，密码从 ECK 自动生成的 my-es-es-elastic-user 这个 Secret 读——这个 Secret 名字你需要自己确认一下是否准确，规则是 <集群名>-es-elastic-user，你的 ES 集群名如果不是 my-es（从你 Service 名 my-es-es-http 反推大概率是），跑一下 kubectl get secret -n toy-infra | grep elastic-user 确认。
+
+elasticsearch-exporter 官方镜像默认读 ES_USERNAME/ES_PASSWORD 这两个环境变量做 Basic Auth（不用在 args 里额外写用户名密码明文，这样也不会出现在 kubectl describe pod 的日志里，更安全）。
+
+##
+Warning  BackOff    12s (x4 over 99s)   kubelet            spec.containers{es-exporter}: Back-off restarting failed container es-exporter in pod elasticsearch-exporter-5cb849d7b9-blf29_toy-infra(f7792d3c-bd43-43eb-a68a-3d4ae1ed23e8)
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/frontend$ kubectl logs elasticsearch-exporter-5cb849d7b9-blf29  -n toy-infra --tail 20
+elasticsearch_exporter: error: unexpected false, try --help
+
+是那个 --es.ssl-skip-verify=false 参数格式不对——布尔 flag 不能这么写
+
+中文：
+
+describe 里配置本身没问题（CA 挂载正确、环境变量正确），错误出在 --help 这条提示上——elasticsearch_exporter 用的命令行库（Kingpin）对布尔类型的 flag 有个严格规矩：不接受 --flag=false 这种写法。布尔 flag 只有两种合法用法：
+
+要开启：直接写 --flag（不带值）
+要关闭：用 --no-flag（前面加 no-前缀，不是写 =false）
+
+你这句 --es.ssl-skip-verify=false 想表达的是"不跳过校验"（也就是默认行为，不加这个 flag 才是真正意义上啥都没配），但按它的语法规则,=false 直接就是个非法参数,解析器认不出来,所以报 unexpected false。
+
+修法很简单：这行直接删掉（你想要的是"正常校验证书",这就是它的默认行为,不需要任何 flag 去表达"默认")：
+
+yaml
+args:
+  - --es.uri=https://my-es-es-http.toy-infra.svc:9200
+  - --es.ca=/certs/ca.crt
+
+顺带解释一下这个坑背后的原理,方便你以后遇到类似的命令行工具少踩一次：很多用 Go 写的 CLI 工具（Kingpin、pflag 等库都这样）对布尔 flag 的处理逻辑是"flag 出现 = true，flag 不出现 = false（或走默认值），要显式设 false 得用 --no-xxx"，跟你写 YAML/JSON 里 key: false 那种"随便赋值"的直觉不一样——这是命令行参数解析的常见陷阱，不止这一个工具这样。
+
+## 测试elasticsearch-exporter连通
+kubectl run curl-test --rm -it --image=curlimages/curl --restart=Never -n toy-infra -- \
+  curl http://elasticsearch-exporter:9114/metrics
+
+
+## 
+docker run -d --name mysqld-exporter --restart unless-stopped \
+  -p 9104:9104 \
+  -e DATA_SOURCE_NAME="exporter:密码@(127.0.0.1:3306)/" \
+  prom/mysqld-exporter
+
+docker run -d --name redis-exporter --restart unless-stopped \
+  -p 9121:9121 \
+  -e REDIS_ADDR="redis://127.0.0.1:6379" \
+  oliver006/redis_exporter
+解释一下这两个run，并改写成docker-compose，因为我其他服务是这么管理的
+
+两条命令逐个拆解，再改写成 compose 片段
+
+中文：
+
+先拆解这两条 docker run 在做什么：
+
+bash
+docker run -d --name mysqld-exporter --restart unless-stopped \
+  -p 9104:9104 \
+  -e DATA_SOURCE_NAME="exporter:密码@(127.0.0.1:3306)/" \
+  prom/mysqld-exporter
+参数	含义
+-d	后台运行（daemon 模式）
+--restart unless-stopped	宿主机重启后这个容器自动跟着起来，但如果你手动 docker stop 过，重启宿主机也不会自动拉起——你之前问过 restart:always 和 restart:unless-stopped 的区别，这里选的是后者
+-p 9104:9104	把容器内 9104 端口映射到宿主机 9104（这个端口是 mysqld-exporter 默认暴露 /metrics 的端口）
+-e DATA_SOURCE_NAME="exporter:密码@(127.0.0.1:3306)/"	这是核心配置——mysqld-exporter 需要知道连哪个 MySQL、用什么账号密码。格式是 Go 的 MySQL 驱动 DSN 格式：用户名:密码@(地址:端口)/数据库名（数据库名留空表示不指定具体库，因为 exporter 要读的是全局状态，不是某张表）
+bash
+docker run -d --name redis-exporter --restart unless-stopped \
+  -p 9121:9121 \
+  -e REDIS_ADDR="redis://127.0.0.1:6379" \
+  oliver006/redis_exporter
+
+同理，REDIS_ADDR 告诉 exporter 去连哪个 Redis 实例，9121 是它默认暴露 /metrics 的端口。
+
+一个需要你现在就处理的前置条件（之前提过，容易漏）：exporter 这个 MySQL 账号需要你自己先建，不能是 root，只给监控需要的只读权限：
+
+sql
+CREATE USER 'exporter'@'127.0.0.1' IDENTIFIED BY 'ZWxhc3RpYw';
+GRANT PROCESS, REPLICATION CLIENT ON *.* TO 'exporter'@'127.0.0.1';
+GRANT SELECT ON performance_schema.* TO 'exporter'@'127.0.0.1';
+
+改写成 docker-compose，密码用 .env 文件管理（跟明文写进 compose 相比更安全，也方便你以后统一改密码）：
+
+几个跟 docker run 版本相比,值得说明的改动：
+
+127.0.0.1 换成了 host.docker.internal——这是关键改动,不是随便换的。你原来的 docker run 命令里写 127.0.0.1,这个"本地地址"在 docker run 场景下能生效,是因为很多环境默认用了 --network host 或者宿主机本身也在同一网络命名空间；但 compose 默认会给每个服务建一个独立的 bridge 网络,容器内的 127.0.0.1 指的是容器自己,不是宿主机——如果你 compose 里照抄 127.0.0.1,大概率连不上 MySQL/Redis（不会报错,但抓不到数据）。host.docker.internal 是 Docker 官方提供的、专门指向"宿主机本身"的固定域名,搭配 extra_hosts: host-gateway 这行(在 Linux 上需要这行才能生效,Mac/Windows 默认自带)才能用。
+密码从明文改成了 .env 文件引用——建议你把 .env.exporters.example 复制一份改名 .env（跟这份 compose 放同一目录),填入你刚才建的 exporter 账号密码,compose 会自动读取同目录下的 .env。.env 记得加进 .gitignore,别提交到 git 里。
+
+启动方式跟你其他服务应该是一致的：
+
+bash
+docker compose -f docker-compose.exporters.yml up -d
+
+## 有个没起来好像
+157c0deb5b84   oliver006/redis_exporter   "/redis_exporter"        34 seconds ago   Up 33 seconds                   0.0.0.0:9121->9121/tcp, [::]:9121->9121/tcp              redis-exporter
+47229caec531   prom/mysqld-exporter       "/bin/mysqld_exporter"   52 seconds ago   Restarting (1) 23 seconds ago       
+
+
+先看日志确认，但大概率是账号权限的"地址限制"没跟着网络环境更新
+
+中文：
+
+Restarting (1) 说明容器启动后又崩溃退出了（退出码 1 = 出错），先拿到具体报错：
+
+bash
+docker logs mysqld-exporter
+
+不过不用等日志，我大概率能猜到原因——你之前建的 exporter 账号绑定的是 127.0.0.1 这个来源地址：
+
+sql
+CREATE USER 'exporter'@'127.0.0.1' IDENTIFIED BY '...';
+
+这个写法的意思是"只允许从 127.0.0.1 这个地址连过来的 exporter 账号登录"。你上一版用 docker run + 127.0.0.1 直连时能通，是因为当时的网络模式下，容器看到的连接源地址确实是 127.0.0.1。但现在你换成了 compose，用 mysql 这个 Service 名字通过 Docker 自建的 bridge 网络去连——这种情况下，mysqld-exporter 容器发起连接时，MySQL 那边看到的来源 IP，是 Docker 网络分配给 mysqld-exporter 这个容器的内部 IP（类似 172.x.x.x），根本不是 127.0.0.1。MySQL 一看"这个来源地址不在 exporter@127.0.0.1 的白名单里"，直接拒绝登录，容器因为连不上数据库直接退出，于是被 restart: unless-stopped 不断拉起又崩溃，形成你看到的 Restarting 循环。
+
+验证这个猜测最快的办法：跑一下 docker logs mysqld-exporter，如果看到类似
+
+Access denied for user 'exporter'@'172.x.x.x' (using password: YES)
+
+这种就实锤了。
+
+修法：把账号的来源地址限制放宽,从"只认 127.0.0.1"改成"认整个 Docker 网络段"或者直接"任意地址"（homelab 场景问题不大）：
+
+sql
+-- 先删掉旧的（可选，也可以直接建新的）
+DROP USER IF EXISTS 'exporter'@'127.0.0.1';
+
+-- 方式一：只信任docker-compose默认网络的网段（推荐，稍微严谨一点）
+CREATE USER 'exporter'@'172.16.0.0/12' IDENTIFIED BY '换成真实密码';
+GRANT PROCESS, REPLICATION CLIENT ON *.* TO 'exporter'@'172.16.0.0/12';
+GRANT SELECT ON performance_schema.* TO 'exporter'@'172.16.0.0/12';
+
+-- 方式二：图省事，允许任意来源（homelab环境完全可以接受）
+CREATE USER 'exporter'@'%' IDENTIFIED BY '换成真实密码';
+GRANT PROCESS, REPLICATION CLIENT ON *.* TO 'exporter'@'%';
+GRANT SELECT ON performance_schema.* TO 'exporter'@'%';
+
+FLUSH PRIVILEGES;
+
+（172.16.0.0/12 覆盖了 Docker 默认 bridge 网络常用的 IP 段，如果你的 compose 项目自定义了网络段，用 docker network inspect <网络名> 查一下实际的 Subnet 再对应改）
+
+这也解释了一个你可能会好奇的点：redis-exporter 为什么没有同样的问题、直接就 Up 了——因为 Redis 默认配置下没有账号体系（除非你专门设了 requirepass 之类的 ACL），只要网络能通就能连，不存在"来源地址白名单"这道关卡，所以换了网络模式也不受影响。
+
+
+## 
+msg="Build context" build_context="(go=go1.26.5, platform=linux/amd64, user=root@f5556af0d5ab, date=20260813-18:28:36, tags=unknown)"
+time=2026-09-22T09:53:44.987Z level=ERROR source=config.go:167 msg="failed to validate config" section=client err="no user specified in section or parent"
+time=2026-09-22T09:53:44.987Z level=INFO source=mysqld_exporter.go:295 msg="Error parsing host config" file=.my.cnf err="no configuration found"
+
+找到根因了：DATA_SOURCE_NAME 这个环境变量已经被官方废弃
+
+中文：
+
+这次不是你的配置写错了，是 mysqld_exporter 从某个版本开始（2023 年左右的一次 breaking change）彻底砍掉了 DATA_SOURCE_NAME 这种"一个字符串搞定连接信息"的方式。你在网上能搜到的大部分教程（包括我之前给你的）用的还是老写法，v0.20.0 已经不认了——这也是为什么日志显示它压根没读到你的连接信息，直接去找 .my.cnf 配置文件，没找到就报 no user specified。
+
+官方的原话是这么说的：
+
+The exporter no longer supports the monolithic DATA_SOURCE_NAME environment variable. To configure connections to MySQL you can either use a my.cnf style config file or command line arguments.
+
+新的标准写法是：用户名走 flag，密码走一个新的专用环境变量：
+
+yaml
+mysqld-exporter:
+  image: prom/mysqld-exporter
+  container_name: mysqld-exporter
+  restart: unless-stopped
+  ports:
+    - "9104:9104"
+  environment:
+    MYSQLD_EXPORTER_PASSWORD: "${MYSQL_EXPORTER_PASSWORD}"
+  command:
+    - --mysqld.address=mysql:3306
+    - --mysqld.username=exporter
+
+跟老写法对比一下，帮你理清变化逻辑：
+
+	老写法（已废弃）	新写法
+地址+端口	塞进 DATA_SOURCE_NAME 字符串里	--mysqld.address=mysql:3306（flag）
+用户名	同上	--mysqld.username=exporter（flag）
+密码	同上，明文写在 DSN 字符串里	MYSQLD_EXPORTER_PASSWORD 环境变量（单独拆出来，好处是不会跟用户名/地址混在一个字符串里，用 docker secrets 之类的方式管理也更干净）
+
+你的 .env 文件不用改，MYSQL_EXPORTER_PASSWORD 这个变量名继续用，只是 compose 里怎么引用它的地方变了（从塞进 DSN 字符串，变成单独一行 MYSQLD_EXPORTER_PASSWORD）。
+
+改完重新拉起：
+
+bash
+docker compose -f docker-compose.exporters.yml up -d --force-recreate mysqld-exporter
+
+redis-exporter 那边不受影响，不用动。
+
+采到的是「探针自己的体检报告」，不是数据库指标本身——两个 up=0 说明目标都没连上
+
+中文：
+
+先说清楚一个容易误解的地方：这份输出里的 go_*、process_* 这些，是 exporter 进程本身的健康状态（内存、GC、CPU），跟 exporter 有没有连上 MySQL/Redis 完全无关，是永远都会有的"自证在世"数据。真正判断"采集到没有"的关键，是这两行：
+
+mysql_up 0
+redis_up 0
+
+0 就是"没连上"——如果连上了，这里应该是 1，而且下面会跟着一大串 mysql_global_status_*/redis_db_keys 之类的真实业务指标，你这两份输出里都没有，说明这一步还没成功。
+
+Redis 这边报错很明确，直接给了原因：
+
+redis_exporter_last_scrape_error{err="dial tcp: lookup redis on 127.0.0.11:53: server misbehaving"} 1
+
+127.0.0.11:53 是 Docker 内置的 DNS 服务器地址——这行的意思是 redis-exporter 容器尝试解析 redis 这个主机名，Docker DNS 压根不认识 redis 这个名字，说明 redis-exporter 和你实际跑 Redis 的那个容器不在同一个 Docker 网络里。你之前的架构里，MySQL/Redis 是常驻宿主机的独立容器（不在 compose 项目里管理的），而你这次新建的 mysqld-exporter/redis-exporter 是通过 docker compose 起的——Docker Compose 默认会给项目自动建一个专属的 bridge 网络，只有同一个 compose 项目（或者显式 docker network connect 过的容器）里的服务，才能互相用容器名/服务名当域名解析。你原来那个 Redis 容器大概率不在这个新网络里，所以 redis 这个名字在 exporter 容器的视角里，谁都不是。
+
+MySQL 那边虽然没有像 Redis 一样打印出具体错误，但大概率是同一类问题（mysql 这个名字同样解析不到）——mysqld_exporter 目前的输出格式里，连接失败的细节没有像 redis_exporter 这样直接暴露在 metrics 里，可以跑一下 docker logs mysqld-exporter 看它日志里到底报的什么错，大概率也是类似 dial tcp: lookup mysql: no such host 或者 connection refused。
+
+修法：确认你实际的 MySQL/Redis 容器叫什么名字、在哪个网络，把 exporter 也接进去。
+
+Step 1，先查清楚现状：
+
+bash
+docker network ls
+docker inspect <你实际的redis容器名> --format '{{json .NetworkSettings.Networks}}' | jq
+
+Step 2，根据你的实际架构，有两种修法：
+
+方案 A（如果 MySQL/Redis 本身也是独立 docker run 起的、没有加入任何自定义网络）：最简单的办法是直接用宿主机 IP 或 host.docker.internal（我们上上次就是这么处理的，你可能中间切换成了 mysql/redis 这两个 service 名，但如果实际环境里根本没有名字叫 mysql/redis 的容器在同一网络里，就要退回 IP 方式）：
+
+yaml
+environment:
+  MYSQLD_EXPORTER_PASSWORD: "${MYSQL_EXPORTER_PASSWORD}"
+command:
+  - --mysqld.address=host.docker.internal:3306
+  - --mysqld.username=exporter
+yaml
+environment:
+  REDIS_ADDR: "redis://host.docker.internal:6379"
+
+（别忘了两个 service 都要带上 extra_hosts: ["host.docker.internal:host-gateway"]，这行我们上次的版本里加过）
+
+方案 B（如果你确实想让它们同网络互通,更贴近"服务发现"的真实做法）：把 exporter 加进 MySQL/Redis 所在的那个网络（需要先确认那个网络叫什么名字）：
+
+yaml
+services:
+  mysqld-exporter:
+    ...
+    networks:
+      - default
+      - host-services   # 你实际MySQL/Redis所在的网络名，需要确认
+
+networks:
+  host-services:
+    external: true
+    name: 实际网络名
+
+建议：先跑 Step 1 那两条命令确认现状再决定走 A 还是 B——你之前一直是按"宿主机模拟云托管服务"这个思路设计的（MySQL/Redis 故意放宿主机、不进 k3s），这个思路延续到这里，方案 A（用地址直连，不搞容器间网络发现）其实更贴合你原来的架构意图，B 方案反而是给这套"外部依赖"人为加了一层容器网络耦合,没必要。
+
+
+用「网络重连」而不是「删了重建」——你这两个数据库容器已经跑了 8 周，重建有丢数据风险
+
+中文：
+
+先说清楚问题根源：Docker Compose 的网络默认命名规则是 <项目名>_default,而项目名默认取自「你执行 docker compose up 时所在的目录名」。你显然是在两个不同的目录下分别跑过 docker compose up（一次目录叫 docker-compose，一次目录叫 infra），所以才产生了 docker-compose_default 和 infra_default 这两个不同的网络——同一份 compose 文件、内容一样，但因为执行时所在目录不同,Compose 判它们是"两个不同的项目"，各自建了各自的网络,这就是根因。
+
+修复思路,我选了对你现有数据最安全的路径：不删容器、不重建,只是"重新接网线"。原因是：MySQL/Redis 这两个容器已经跑了 8 周,如果走"删容器重建"的路子,Compose 默认按 <项目名>_<volume名> 命名数据卷,只要这次执行时的项目名和当初创建 volume 时不完全一致,新建的容器会挂到一个全新的空 volume 上,表面上"重建成功"，实际上你之前 8 周积累的数据全丢了还不会报错——这是个很容易踩、但后果很重的坑，所以这次我们绕开它。
+
+Step 1 — 先看清楚现状,确认每个容器实际在哪个网络：
+
+bash
+docker inspect --format '{{.Name}}: {{range $net, $v := .NetworkSettings.Networks}}{{$net}} {{end}}' \
+  toy-mysql toy-redis mysqld-exporter redis-exporter local-registry
+
+跑出来的结果贴给我确认一下也行,不过按你描述的情况,大概率是：toy-mysql/toy-redis/local-registry 在 infra_default，mysqld-exporter/redis-exporter 在 docker-compose_default。
+
+Step 2 — 建一个固定名字的新网络,把所有容器都接进去（不影响现有连接,容器可以同时挂多个网络）：
+
+bash
+docker network create toy-infra-net
+
+docker network connect toy-infra-net toy-mysql
+docker network connect toy-infra-net toy-redis
+docker network connect toy-infra-net mysqld-exporter
+docker network connect toy-infra-net redis-exporter
+docker network connect toy-infra-net local-registry
+
+这一步做完，mysqld-exporter/redis-exporter 里配的 mysql:3306、redis://redis:6379 这两个域名就能正常解析了——不用等 compose 文件生效,现在就能测：
+
+bash
+curl http://localhost:9104/metrics | grep mysql_up
+curl http://localhost:9121/metrics | grep redis_up
+
+应该都变成 1。
+
+Step 3 — 确认新网络通了之后,再从旧网络里把这些容器摘掉,准备清理旧网络：
+
+bash
+docker network disconnect infra_default toy-mysql
+docker network disconnect infra_default toy-redis
+docker network disconnect infra_default local-registry
+docker network disconnect docker-compose_default mysqld-exporter
+docker network disconnect docker-compose_default redis-exporter
+
+Step 4 — 这时候两个旧网络应该已经没有容器挂在上面了,可以删：
+
+bash
+docker network rm docker-compose_default infra_default
+
+Step 5 — 改 compose 文件本身,让"以后"也不会再出现这种问题（这才是治本，前面 4 步是治当下）。关键是给网络起一个固定名字，不再依赖"执行目录"这个不稳定的因素去推导网络名，同时给 ES/Kafka 相关服务打上 profiles，这样 docker compose up -d 默认就不会启动它们（因为你现在用 k3s 里的那套）：
+
+**一个需要修正的地方：因为 Step 2 里已经手动 docker network create 过 toy-infra-net 了，compose 文件这里要加 external: true,告诉 Compose "这个网络不用你来建,我已经建好了,直接用"——不然 Compose 会尝试自己创建同名网络,和已存在的手动创建的网络冲突报错：
+
+完整操作顺序（Step 1~4 是现在就做,Step 5 是替换文件,做完 Step 4 才能做 Step 5）：
+
+bash
+# Step 1：确认现状（可选，帮助你核对）
+docker inspect --format '{{.Name}}: {{range $net, $v := .NetworkSettings.Networks}}{{$net}} {{end}}' \
+  toy-mysql toy-redis mysqld-exporter redis-exporter local-registry
+
+# Step 2：建统一网络，接入现有容器（不停机、不影响现有数据）
+docker network create toy-infra-net
+docker network connect toy-infra-net toy-mysql
+docker network connect toy-infra-net toy-redis
+docker network connect toy-infra-net mysqld-exporter
+docker network connect toy-infra-net redis-exporter
+docker network connect toy-infra-net local-registry
+
+# 验证exporter现在能连上了
+curl -s http://localhost:9104/metrics | grep ^mysql_up
+curl -s http://localhost:9121/metrics | grep ^redis_up
+# 应该都是 1
+
+# Step 3：从旧网络摘除（按Step 1实际结果调整每行的旧网络名）
+docker network disconnect infra_default toy-mysql
+docker network disconnect infra_default toy-redis
+docker network disconnect infra_default local-registry
+docker network disconnect docker-compose_default mysqld-exporter
+docker network disconnect docker-compose_default redis-exporter
+
+# Step 4：清理不再使用的旧网络
+docker network rm docker-compose_default infra_default
+
+# Step 5：把这份新的docker-compose.dev.yml替换掉你原来的文件
+# 以后固定从这份文件所在目录执行 docker compose up -d 即可（默认不会启动es/kafka系列）
+
+关于 volume 的一个额外提醒：Step 1~4 完全没碰容器/volume，你 8 周的数据绝对安全。但如果你以后哪天真的想用 docker compose down && docker compose up -d 重建这几个容器（比如换镜像版本），记得先 docker volume ls 确认一下 mysql-data/es-data 这些卷实际的完整名字（带项目名前缀的那种，比如 infra_mysql-data），如果和新项目名对不上，同样会创建空卷导致丢数据——这个坑以后升级/迁移时还会遇到，值得记住。
+
+
+
+## Compose 默认按 <项目名>_<volume名>是不是 mysql_mysql-data，那它们重建是不是没问题，不过咱们不重建，纯好奇
+
+Explaining how Docker Compose names volumes by default.
+不是 mysql_，是整个目录名，不是服务名
+中文：
+
+这里有个理解上的小偏差：Compose 的项目名取的是你执行命令时所在的整个目录名，不是"取某个 service 的名字"。你这份文件里有个 service 叫 mysql，但项目名跟这个 service 名完全没关系——如果你是在 ~/Documents/homelab-toy-system/docker-compose/ 这个目录下跑的 docker compose up，项目名就是 docker-compose，volume 就叫 docker-compose_mysql-data；如果是在叫 infra 的目录下跑的，就是 infra_mysql-data。具体是哪个,只有你现在实际去查才知道，我不能靠猜：
+
+bash
+docker volume ls
+跑出来大概率会看到类似 infra_mysql-data、docker-compose_mysql-data 这样的东西（也可能两个都有，一个在用一个是当初误建的孤儿卷）——哪个在被 toy-mysql 这个容器实际挂载,可以用：
+
+bash
+docker inspect toy-mysql --format '{{range .Mounts}}{{.Name}} -> {{.Destination}}{{"\n"}}{{end}}'
+这条能精确告诉你,当前正在用的那个 volume 叫什么名字——这个才是准的,不用猜。
+
+回到你说的"不过咱们不重建,纯好奇"——那我直接回答你的假设性问题：
+
+如果项目名固定不变（每次都从同一个目录执行,或者像我们这次给网络显式指定了名字那样,给项目也显式指定名字),那"删了重建"是完全没问题的——Compose 判断"这个 volume 该不该复用",靠的是名字精确匹配，不是判断"这个数据是不是同一批数据"。只要项目名这次和上次一模一样,docker compose down && docker compose up -d 算出来的 volume 名字也会一模一样,自动接回同一份数据,不会丢。
+
+真正会出问题的场景,只有一种：两次执行时项目名不一样（就像你这次 docker-compose vs infra 这两个目录导致的）——这种情况下,Compose 算出来的 volume 名字也会跟着变,拿到的是一个全新的空 volume,表面上"容器正常起来了,没报错",实际上连的是空数据库,新旧数据完全断开——这个坑最阴险的地方就在于它不报错,你不会立刻发现,往往是过一阵子发现"数据怎么没了"才回头意识到问题出在项目名变了。
+
+这也是为什么我们刚才给网络加了 name: toy-infra-net 这种显式命名——同样的道理其实也适用于项目本身,如果你想彻底根治"从哪个目录执行都不受影响"这个问题,可以在 compose 文件顶部加一行 name: 字段（跟你现在加的 networks.default.name 是同一个思路,只是作用范围从"网络"扩大到"整个项目"）：
+
+yaml
+name: toy-system-dev   # 固定死项目名，不管你在哪个目录执行 docker compose，都用这个
+加了这行之后，volume 名字就固定是 toy-system-dev_mysql-data，不管你以后从哪个目录跑这份文件，都不会再出现"分裂成两份数据"这类问题——这个我建议你之后找机会顺手加上，不急于现在改。
+
+
+## 你猜的都对，但本地的数据用处不大，要不就全删了重建，包括镜像仓库，这是现在的
+
+全删重建：既然确认数据不重要，一次性清干净比零敲碎打更省事
+
+中文：
+
+先提醒一句关于 registry 的实际影响（不是拦你，只是确保你知道后果）：你 P5 已经推过 5 个业务镜像到这个 local-registry,k3s 那边节点上其实已经缓存了这些镜像（containerd 本地有一份）,所以就算你现在删了 registry,已经在跑的那几个 Pod 不会立刻受影响。但如果以后某个 Pod 被重新调度到一个没缓存过这个镜像的新节点上,或者你手动 docker rmi 清过本地镜像缓存,就会因为找不到源头拉不到镜像——所以删之前如果手头还有这 5 个镜像的本地 tag,不着急删的话可以晚点删,或者干脆等重建完之后重新 docker push 一遍就行,反正是 homelab,不麻烦。
+
+完整清空步骤：
+
+bash
+# Step 1：停掉所有相关容器（不管它们当前挂在哪个网络下）
+docker stop toy-mysql toy-redis mysqld-exporter redis-exporter local-registry
+docker rm toy-mysql toy-redis mysqld-exporter redis-exporter local-registry
+
+# Step 2：看一眼实际的volume名字，确认要删的是哪几个（避免手滑删错东西）
+docker volume ls
+
+# Step 3：把上一步确认好的volume全删（名字按Step 2实际输出调整，这里假设是infra_前缀）
+docker volume rm infra_mysql-data infra_kafka-data infra_es-data infra_registry-data
+# 如果Step 2里看到还有 docker-compose_ 前缀的同名孤儿卷，一并清掉：
+docker volume rm docker-compose_mysql-data docker-compose_kafka-data docker-compose_es-data docker-compose_registry-data 2>/dev/null
+
+# Step 4：确认没有残留容器占用后，删掉toy-infra-net（因为接下来的docker compose up
+# 会重新识别为external网络直接复用，这一步只是彻底清一次，图个干净）
+docker network rm toy-infra-net 2>/dev/null
+
+# Step 5：重新建这个网络（因为compose文件里标了external:true，不会自动帮你建）
+docker network create toy-infra-net
+
+# Step 6：用新文件整个拉起来（默认不启动es/kafka/kibana/kafka-ui，因为它们带了profile）
+docker compose -f docker-compose.dev.yml up -d
+
+跑完之后验证一下：
+
+bash
+docker ps
+# 应该看到：toy-mysql / toy-redis / local-registry / mysqld-exporter / redis-exporter 五个
+
+docker volume ls | grep toy-system
+# 这次应该都是 toy-system_ 前缀了（因为文件顶部加了 name: toy-system）
+
+curl -s http://localhost:9104/metrics | grep ^mysql_up
+curl -s http://localhost:9121/metrics | grep ^redis_up
+# 都应该是 1
+
+关于业务数据：toy-mysql 重建后是全新空库（只有 MYSQL_DATABASE: toy_policy_db 这个空数据库和账号，没有表和数据），如果你的 4 个 Java 服务之前在这个库里存过测试数据，重建后需要重新跑一遍你的业务流程（建 policy、走一遍 create/update/cancel）来生成测试数据，search-service/notification-service 这些下游消费者应该也能正常从头消费。registry 重建后是空仓库,之前 push 的 5 个镜像需要重新 docker push 一遍（如果本地 docker images 还有这几个 tag,直接重新推,不用重新 build）。
+
+## 我有一个在意的点，mysql密码除了暴露点需要的，是不是不需要重建，另外重新给一下那个建账户密码的语句，不要限定ip了
+
+你的理解完全正确——只有 exporter 这一个账号需要你手动重建
+
+中文：
+
+这个判断没错,而且原理值得说清楚,方便你以后重建同类容器时心里有数：
+
+root 和 toy_app 这两个账号,不用你操心,会自动回来——因为它们是通过 compose 文件里的环境变量声明的：
+
+yaml
+environment:
+  MYSQL_ROOT_PASSWORD: root
+  MYSQL_DATABASE: toy_policy_db
+  MYSQL_USER: toy_app
+  MYSQL_PASSWORD: toy_app_pw
+
+MySQL 官方镜像有个机制：这些环境变量只在"volume 是全新的、从未初始化过"这种情况下才会生效,容器启动时发现挂载的数据目录是空的,就会跑一遍初始化脚本,按这几个环境变量的值自动建好 root 密码、建好 toy_policy_db 这个库、建好 toy_app 这个账号——你这次是连 volume 一起删了重建,所以走的正好是这条"全新初始化"路径,这两个账号会原样自动恢复,密码也还是 root/toy_app_pw,不用你手动建。
+
+exporter 这个账号不一样——它当初是你自己手动跑 SQL 建的,不在 compose 文件的声明范围内,MySQL 的自动初始化机制根本不知道这个账号的存在,所以 volume 一清空,这个账号也跟着彻底消失,重建后必须你自己再手动跑一遍 SQL 才会有。这就是为什么"暴露点需要的（exporter）要重建,其他的不用"——本质区别在于"谁负责创建这个账号"：compose 环境变量负责的自动回来,你自己手动建的不会自动回来。
+
+去掉 IP 限制的版本：
+
+sql
+CREATE USER 'exporter'@'%' IDENTIFIED BY '换成真实密码';
+GRANT PROCESS, REPLICATION CLIENT ON *.* TO 'exporter'@'%';
+GRANT SELECT ON performance_schema.* TO 'exporter'@'%';
+FLUSH PRIVILEGES;
+
+'%' 表示"允许从任意来源地址连接"，不用再纠结 Docker 网络内部 IP 到底是 127.0.0.1 还是某个动态分配的内部 IP 这个问题了——这也是我们上次真正踩坑的根源（exporter@127.0.0.1 这种精确 IP 限制,在容器化环境下命中率很低,IP 会跟着网络模式变来变去）。
+
+执行方式（等 Step 6 的 docker compose up -d 跑完、toy-mysql 健康检查通过之后再执行）：
+
+bash
+docker exec -it toy-mysql mysql -uroot -proot -e "
+CREATE USER 'exporter'@'%' IDENTIFIED BY 'ZWxhc3RpYw';
+GRANT PROCESS, REPLICATION CLIENT ON *.* TO 'exporter'@'%';
+GRANT SELECT ON performance_schema.* TO 'exporter'@'%';
+FLUSH PRIVILEGES;
+"
+
+密码记得跟你 .env 文件里 MYSQL_EXPORTER_PASSWORD 那个值保持一致，建完之后 mysqld-exporter 容器应该会自动重连成功（它本身有重试机制，不需要你手动重启它）。

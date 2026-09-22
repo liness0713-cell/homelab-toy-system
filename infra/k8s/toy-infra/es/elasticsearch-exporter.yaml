@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: elasticsearch-exporter
+  namespace: toy-infra
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: es-exporter}
+  template:
+    metadata:
+      labels: {app: es-exporter}
+    spec:
+      containers:
+        - name: es-exporter
+          image: quay.io/prometheuscommunity/elasticsearch-exporter:v1.7.0
+          args:
+            - --es.uri=https://my-es-es-http.toy-infra.svc:9200
+            - --es.ca=/certs/ca.crt
+          env:
+            - name: ES_USERNAME
+              value: elastic
+            - name: ES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: my-es-es-elastic-user
+                  key: elastic
+          ports:
+            - containerPort: 9114
+          volumeMounts:
+            - name: es-ca-cert
+              mountPath: /certs
+              readOnly: true
+      volumes:
+        - name: es-ca-cert
+          secret:
+            secretName: my-es-es-http-certs-public
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch-exporter
+  namespace: toy-infra
+spec:
+  selector: {app: es-exporter}
+  ports:
+    - port: 9114

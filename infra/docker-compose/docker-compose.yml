@@ -1,5 +1,10 @@
+name: toy-system   # 固定死项目名，不管你在哪个目录执行 docker compose，都用这个
+
 # 本地开发环境中间件。业务服务不在这里跑（用 mvn spring-boot:run / npm run dev 直接跑，方便调试）。
 # P1: MySQL + Redis。P3: 加了Kafka（KRaft单节点）。P4: 加了Elasticsearch + Kibana。
+# P6: 加了mysqld-exporter/redis-exporter。ES/Kafka已迁移到k3s（toy-infra namespace），
+#     这里的es/kafka/kibana/kafka-ui加了profile，默认`docker compose up -d`不会启动它们，
+#     只有明确需要本地调试时才用 `docker compose --profile legacy-streaming up -d` 拉起。
 services:
   mysql:
     image: mysql:8.4
@@ -38,6 +43,7 @@ services:
     image: apache/kafka:4.2.1
     container_name: toy-kafka
     restart: unless-stopped
+    profiles: ["legacy-streaming"]   # 已迁移到k3s，默认不启动
     ports:
       - "9092:9092"
     environment:
@@ -75,6 +81,7 @@ services:
     image: kafbat/kafka-ui:v1.5.0
     container_name: toy-kafka-ui
     restart: unless-stopped
+    profiles: ["legacy-streaming"]   # 依赖kafka服务，同样默认不启动
     ports:
       # 用9090而不是8080/8081/8082...这个连续区间——那段留给gateway-service/policy-service/
       # notification-service/以后的search-service等业务服务用，这里特意避开。
@@ -92,6 +99,7 @@ services:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.19.19
     container_name: toy-elasticsearch
     restart: unless-stopped
+    profiles: ["legacy-streaming"]   # 已迁移到k3s（ECK），默认不启动
     environment:
       discovery.type: single-node
       # 本地开发简化：关掉需要TLS证书+账号密码的安全模块，不然本地起一个ES还要先搞证书。
@@ -111,6 +119,7 @@ services:
     image: docker.elastic.co/kibana/kibana:8.19.19
     container_name: toy-kibana
     restart: unless-stopped
+    profiles: ["legacy-streaming"]   # 依赖elasticsearch服务，同样默认不启动
     environment:
       # Kibana自己跑在compose网络里，用容器名访问ES；跟kafka-ui访问kafka是同一个道理。
       ELASTICSEARCH_HOSTS: http://elasticsearch:9200
@@ -130,8 +139,39 @@ services:
     volumes:
       - registry-data:/var/lib/registry
 
+  mysqld-exporter:
+    image: prom/mysqld-exporter
+    container_name: mysqld-exporter
+    restart: unless-stopped
+    ports:
+      - "9104:9104"
+    environment:
+      MYSQLD_EXPORTER_PASSWORD: "${MYSQL_EXPORTER_PASSWORD}"
+    command:
+      - --mysqld.address=mysql:3306
+      - --mysqld.username=exporter
+
+  redis-exporter:
+    image: oliver006/redis_exporter
+    container_name: redis-exporter
+    restart: unless-stopped
+    ports:
+      - "9121:9121"
+    environment:
+      REDIS_ADDR: "redis://redis:6379"
+
 volumes:
   mysql-data:
   kafka-data:
   es-data:
   registry-data:
+
+# 关键改动：给默认网络显式指定一个固定名字，不再依赖"执行docker compose时所在目录"
+# 去推导网络名——这正是这次mysqld-exporter/redis-exporter和mysql/redis被分到两个网络
+# (docker-compose_default / infra_default)的根因。以后不管从哪个目录执行
+# `docker compose -f 这份文件 up -d`，都会稳定连到同一个叫toy-infra-net的网络上。
+networks:
+  default:
+    name: toy-infra-net
+    external: true   # 这个网络已经在Step 2用 `docker network create` 手动建过了，
+                      # 加external告诉compose直接复用，不要自己再建一份同名的
