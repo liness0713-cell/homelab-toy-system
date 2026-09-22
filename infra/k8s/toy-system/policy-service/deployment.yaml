@@ -4,7 +4,7 @@ metadata:
   name: policy-service
   namespace: toy-system
 spec:
-  replicas: 3
+  replicas: 1
   selector:
     matchLabels:
       app: policy-service
@@ -21,7 +21,7 @@ spec:
           effect: "NoSchedule"
       containers:
         - name: policy-service
-          image: localhost:5000/policy-service:202608291813-b836314
+          image: localhost:5000/policy-service:202609221016-d9114da
           ports:
             - containerPort: 8081
           envFrom:

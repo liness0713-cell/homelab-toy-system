@@ -4,7 +4,7 @@ metadata:
   name: search-service
   namespace: toy-system
 spec:
-  replicas: 3
+  replicas: 1
   selector:
     matchLabels:
       app: search-service
@@ -21,7 +21,7 @@ spec:
           effect: "NoSchedule"
       containers:
         - name: search-service
-          image: localhost:5000/search-service:202609020807-3805cc8
+          image: localhost:5000/search-service:202609221016-d9114da
           ports:
             - containerPort: 8083
           envFrom:
