@@ -595,3 +595,295 @@ server {
 }
 
 改完重新打包镜像、重新部署就行。这个坑很典型：从零写一份独立的 nginx.conf（替换整个主配置文件）和只写一份放进 conf.d/ 目录（被主配置 include 进去）是两种完全不同的写法，前者必须自己包 http{}（还得包 events{} 等），后者不能包，因为外层已经帮你包好了。你的 Dockerfile 里 COPY 的目标路径是 /etc/nginx/conf.d/default.conf（从报错路径能看出来），所以属于第二种情况。
+
+## 9113端口不能被访问，我改了一下service，但应用不上
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: toy-system
+spec:
+  selector:
+    app: frontend
+  ports:
+    - port: 80
+      targetPort: 80
+    - port: 9113
+      targetPort: 9113
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/frontend$ kubectl apply -f /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-system/frontend/service.yaml
+The Service "frontend" is invalid: 
+* spec.ports[0].name: Required value
+* spec.ports[1].name: Required value
+
+
+报错本身就是答案：多端口 Service 必须给每个端口起名字
+
+中文：
+
+单端口的 Service 可以省略 name 字段（k8s 默认给它一个隐式名字），但一旦一个 Service 里有 2 个或以上端口，k8s 强制要求每个 port 条目都必须显式写 name——因为像 Endpoints/EndpointSlice 这类底层对象要靠端口名字去区分"这个端口对应哪个服务"，两个都不写名字 k8s 就没法区分它们，所以直接拒绝这份 YAML（校验在 apply 阶段就挡下来了，没有真正应用到集群）。
+
+改法很直接，加两个 name：
+
+yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: toy-system
+spec:
+  selector:
+    app: frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+    - name: metrics
+      port: 9113
+      targetPort: 9113
+
+名字本身你可以随便起，但有个惯例：http/metrics 这种语义化名字比 port1/port2 更好，因为将来 Prometheus 的 ServiceMonitor（如果你之后装 kube-prometheus-stack 的话）经常会按端口名字（而不是端口号）来指定要抓哪个端口，起个 metrics 这样的名字等于提前帮后面的自己省一步。
+
+这次改完 apply 应该就能成功，但还有一步要确认：Service 只是把 9113 端口在集群内暴露出来，它能不能真正通，取决于 Pod 里的 nginx-exporter 容器本身有没有在监听 9113。改完 Service 后，建议照着你之前那套"起个临时 Pod 进去 curl"的方法验证一下：
+
+bash
+kubectl run curl-test --rm -it --image=curlimages/curl --restart=Never -n toy-system -- \
+  curl http://frontend:9113/metrics
+
+如果这一步还是不通，大概率是 exporter 容器那边 -nginx.scrape-uri 指向的 stub_status 地址没配对（比如 exporter 容器和 nginx 容器虽然同 Pod，但 stub_status 监听的是 127.0.0.1:8080 而不是对外的 80），可以贴一下 kubectl logs <pod> -c nginx-exporter 看它自己有没有报错。
+
+
+## 可以curl pod吗？我想看/nginx_status本身什么样，可以进容器直接curl吗？
+可以，两种方式，看你想验证哪个层面
+
+中文：
+
+方式一：直接 exec 进 Pod 里的 nginx-exporter 容器（推荐，因为这个容器本身就是干"curl它"这件事的，镜像里通常自带基础工具，而且能同时验证"exporter 和 stub_status 之间到底通不通"这个你现在最想确认的问题）：
+
+bash
+kubectl exec -it <pod名> -n toy-system -c nginx-exporter -- sh
+
+进去之后（Pod 内所有容器共享同一个网络命名空间，所以能直接用 127.0.0.1）：
+
+bash
+wget -O - http://127.0.0.1:8080/nginx_status
+# 或者，如果这个镜像刚好带curl
+curl http://127.0.0.1:8080/nginx_status
+
+nginx-exporter 官方镜像基础比较精简，可能没有 curl，wget 一般会有；如果两个都没有，就换方式二。
+
+方式二：exec 进 frontend 容器本身——但这里有个前提要先确认：你的 nginx 是从 alpine 基础镜像编译的，官方 nginx:alpine 默认不带 curl/wget，进去大概率会遇到 command not found。可以先试试：
+
+bash
+kubectl exec -it <pod名> -n toy-system -c frontend -- sh
+wget -O - http://127.0.0.1:8080/nginx_status
+
+如果两个容器都没有可用的 HTTP 客户端，退回你之前用过的方法——起一个独立的临时 Pod，但注意它是独立 Pod，跟 frontend Pod 不共享网络命名空间，不能用 127.0.0.1，得走 Service：
+
+bash
+kubectl run curl-test --rm -it --image=curlimages/curl --restart=Never -n toy-system -- \
+  curl http://frontend:9113/metrics
+
+不过这条只能看到 exporter 转换后的 Prometheus 格式指标，看不到 /nginx_status 原始 JSON——因为 stub_status 那个端口 127.0.0.1:8080 根本没有通过 Service 暴露出去（也不应该暴露，它设计上就是 Pod 内部私有端点）。所以想看 /nginx_status 原始样子，必须走方式一或方式二，这也是为什么这类"内部诊断端点"通常故意只监听 127.0.0.1——逼你必须进容器里看，不给外部访问留口子。
+
+## 容器里可以装curl之类的东西吗
+能装，但装完 Pod 一重启就没了——这是个"临时补丁"，不是永久方案
+
+中文：
+
+能装，取决于容器里用的是什么发行版基础镜像，装包命令不一样：
+
+如果基础镜像是 Alpine（你的 nginx-exporter 和 frontend 大概率都是，官方镜像很多默认用 Alpine 追求体积小）：
+
+bash
+kubectl exec -it <pod名> -n toy-system -c frontend -- sh
+apk add --no-cache curl
+
+如果是 Debian/Ubuntu 系：
+
+bash
+kubectl exec -it <pod名> -n toy-system -c frontend -- bash
+apt-get update && apt-get install -y curl
+
+（先 sh 还是 bash 试一下，容器里通常有哪个用哪个，Alpine 一般只有 sh）
+
+几个你需要知道的限制，免得踩坑：
+
+装完立刻能用，但只在这个 Pod 的这一次生命周期里有效——容器的可写层跟你之前问的 access_log 本地文件是同一个道理，Pod 重启/重建/滚动更新，这次装的 curl 就跟着没了，新 Pod 又是一张白纸。这就是为什么我之前建议"起个专门装了 curl 的临时 Pod"（比如 curlimages/curl）——那个思路是把工具打进镜像里，而不是运行时现装，更符合"调试用完即焚"的做法，不用你每次都重新 apk add。
+有些精简镜像可能没有包管理器,或者容器以非 root 用户运行导致装不了包——比如某些"distroless"镜像，连 apk/apt 命令本身都不存在，这种情况现装是装不了的，只能换方式一/方式二里提到的 wget（如果有），或者外部起 curl Pod 走 Service。
+只是临时调试就用这个方法完全没问题,但不要把"进生产 Pod 装工具"当成习惯性操作——生产环境的镜像通常刻意做得越精简越好（减小攻击面、减小体积），临时装包这个动作本身在真实生产环境里很多团队会有告警甚至审计,因为这可能是被入侵后攻击者在装工具的信号。你现在是 homelab 学习环境，随便用没问题，只是提前告诉你这个"实践 vs 生产纪律"的差异。
+
+## 没有sh，邪修
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/frontend$ kubectl exec -it frontend-599b98d9b9-6z65g -n toy-system -c nginx-exporter -- sh
+error: Internal error occurred: Internal error occurred: error executing command in container: failed to exec in container: failed to start exec "9dca2c4c04abb9039973eb9539243c0e0695f6bed530e14a257621abf064cb0c": OCI runtime exec failed: exec failed: unable to start container process: exec: "sh": executable file not found in $PATH
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/frontend$ kubectl exec -it frontend-599b98d9b9-6z65g -n toy-system -c nginx-exporter -- bash
+error: Internal error occurred: Internal error occurred: error executing command in container: failed to exec in container: failed to start exec "478a25b0e71afbbd4cf04a1b3a679add76f19b46715fce3e08c96d036d053ee0": OCI runtime exec failed: exec failed: unable to start container process: exec: "bash": executable file not found in $PATH
+
+符合预期——nginx-exporter 官方镜像就是 distroless，压根没有 shell
+
+中文：
+
+这不是操作错误，是这个镜像本身的设计选择：nginx/nginx-prometheus-exporter 官方镜像基于 scratch（或极简 distroless）构建，里面只有那一个 exporter 可执行文件本身，连 sh/bash 都没有——这类镜像的哲学就是"越精简越好，攻击面降到最低"，所以你之前问的"能不能装 curl"这条路在这里直接走不通（没有包管理器，甚至没有 shell 让你执行 apk add）。
+
+正确做法：用 kubectl debug 注入一个临时的"陪跑容器"（ephemeral container）进这个 Pod，这是 k8s 专门为这种"目标容器没 shell 没工具"场景设计的调试手段：
+
+bash
+kubectl debug -it frontend-599b98d9b9-6z65g -n toy-system \
+  --image=curlimages/curl \
+  --target=frontend \
+  -- sh
+
+进去之后：
+
+bash
+curl http://127.0.0.1:8080/nginx_status
+
+这条命令的关键点解释一下：
+
+kubectl debug 会往这个已经在跑的 Pod 里动态加一个新容器（用你指定的 curlimages/curl 镜像），而不是新建一个独立 Pod——所以它天然和 frontend、nginx-exporter 共享同一个网络命名空间，127.0.0.1 能直接打通，这是你之前用独立 kubectl run 临时 Pod 做不到的
+--target=frontend 让这个新容器还共享 frontend 容器的进程命名空间（方便你如果想 ps aux 看进程，这次用不上但知道即可）
+这个 ephemeral container 退出后不会自动清理掉（这是目前 k8s 的已知限制，ephemeral container 不能被删除，只能等 Pod 本身重建才会消失）——纯 homelab 调试无所谓，生产环境用多了记得心里有数
+
+## 工具不错，省事了。。，那这个容器可以反复进入吗？如何查看pod下有哪些容器，以及如何手动删除它?
+可以反复进，但删不掉——这是 ephemeral container 目前的已知限制
+
+中文：
+
+1. 能不能反复进入？——能，用 kubectl exec 而不是再跑一次 kubectl debug
+
+kubectl debug 只在第一次创建这个 ephemeral container，之后它就一直"挂"在 Pod 上（哪怕你 exit 退出 shell，容器进程本身也还活着，不会被销毁）。所以下次想再进去，直接用标准的 kubectl exec 指定容器名就行：
+
+bash
+kubectl exec -it frontend-599b98d9b9-6z65g -n toy-system -c debugger-xxxxx -- sh
+
+（容器名字是 kubectl debug 自动生成的，格式类似 debugger-随机字符串，具体名字看下一步怎么查）
+
+如果你想再跑一次 kubectl debug 加一个新的调试容器，也完全可以，不会冲突——只是会在 Pod 里越堆越多，不建议每次都新建，复用第一次那个就够了。
+
+2. 怎么查看 Pod 下有哪些容器（包括这个 ephemeral 的）？
+
+bash
+kubectl get pod frontend-599b98d9b9-6z65g -n toy-system -o jsonpath='{.spec.ephemeralContainers[*].name}{"\n"}'
+
+或者更直观，直接看 describe，里面会单独列一个 Ephemeral Containers: 段落，跟 Containers:（你原有的 frontend/nginx-exporter）分开显示：
+
+bash
+kubectl describe pod frontend-599b98d9b9-6z65g -n toy-system
+
+3. 怎么手动删除它？——目前 k8s 版本还做不到，这是个已知限制，不是你操作有问题
+
+Ephemeral containers 设计上只能加，不能单独删——k8s API 目前没有提供"删除某一个 ephemeral container"的接口（这个功能社区已经讨论多年，截至你现在用的 k8s 版本仍未落地）。想彻底清掉它，唯一的办法是让整个 Pod 重建，几种触发方式：
+
+bash
+# 最直接：删掉这个Pod，Deployment会自动重新拉起一个干净的新Pod
+kubectl delete pod frontend-599b98d9b9-6z65g -n toy-system
+
+# 或者：触发一次滚动重启，所有frontend的Pod都会重建
+kubectl rollout restart deployment/frontend -n toy-system
+
+新 Pod 起来后就是干净的，没有这个调试容器了。
+
+实际建议：这个限制反而说明，kubectl debug 更适合"临时排查一下就完事"的场景，用完可以顺手 kubectl delete pod 让它重建（反正 Deployment 会自动补一个新的，不影响服务，前提是你有 ≥2 副本或能接受短暂中断）。如果你预期会频繁调试同一个 Pod，倒不如干脆用你更早学的那个独立临时 Pod 方式（kubectl run curl-test --rm -it ...），退出自动清理，不会在目标 Pod 上留痕迹。
+
+
+## Strimzi Operator可否直接给我官方版的kafka-metrics.yaml，我想要全面的
+说实话：我没法从 GitHub 直接把整份官方文件搬给你，但能给你确切位置 + 一份可直接用的全面版
+
+中文：
+
+先说清楚情况，不装懂：Strimzi 官方仓库的网页版对自动化访问做了限制，我这边没法像读别的网页一样把 examples/metrics/kafka-metrics.yaml 整个内容抓下来给你核对。但我确认了它确实存在，路径是：
+
+https://github.com/strimzi/strimzi-kafka-operator/blob/main/examples/metrics/kafka-metrics.yaml
+
+（同目录下还有 kafka-connect-metrics.yaml 等其他组件的版本，我抓到了那份的完整内容，规则风格和你要的 Kafka broker 版本是一致的写法）
+
+建议你自己在浏览器/宿主机上拉取原文，两种方式都行：
+
+bash
+# 直接下载到本地，之后可以diff对比
+curl -o kafka-metrics-official.yaml \
+  https://raw.githubusercontent.com/strimzi/strimzi-kafka-operator/main/examples/metrics/kafka-metrics.yaml
+
+或者浏览器直接打开上面那个 GitHub 链接看。
+
+与此同时，我把业界通用的、覆盖面很全的 JMX Exporter 规则整理成了一份文件（这套规则是 Kafka 社区广泛复用的标准写法，覆盖 broker 吞吐、请求延迟、副本/分区、controller、JVM 五大类，你可以直接拿去用，不用等你去 diff 官方版本）：
+
+说明这份文件覆盖了什么：
+
+类别	典型指标	用途
+Broker 吞吐	kafka_server_brokertopicmetrics_messagesin_total	每秒进来多少消息，按 topic 拆
+请求延迟	kafka_network_request_totaltimems_99thpercentile	Produce/Fetch 请求 P99 耗时，排查"变慢了"最先看这个
+副本/分区	kafka_server_replicamanager_underreplicatedpartitions	这个是生产级告警必配的，非 0 说明有副本没跟上，数据冗余度下降
+Controller	kafka_controller_kafkacontroller_activecontrollercount	应该恒为 1，变成 0 或 >1 说明集群选主出问题了
+Purgatory	kafka_server_purgatory_size	队列堆积，反映 broker 处理不过来
+JVM	jvm_memory_heap_used_bytes、jvm_gc_collection_time_ms_total	Java 应用通病，GC 时间暴涨往往是性能问题的第一信号
+
+用法跟你原来那份一样，直接替换即可：
+
+bash
+kubectl apply -f kafka-metrics-config.yaml
+
+然后 Kafka CR 里那段 metricsConfig 引用不用改，指向的还是 kafka-metrics-config 这个名字。
+
+一个建议：既然你手头就有宿主机，curl 那条下载官方原文件的命令不妨真的跑一次，diff 一下这份和官方版有什么出入——这个对比本身就是很好的学习素材（官方版本可能字段命名习惯、help/type 写法上跟我这份有差异，能看出社区实践的一些细节）。
+
+## 官方的
+谢谢你贴出来核对——官方版思路比我给的更聪明：用「通用正则」代替「逐个枚举」
+
+中文：
+
+对比之后，有几个值得你知道的实质差异，不只是"官方 vs 我编的"这种表面区别：
+
+1. 设计思路完全不同，官方的更高级
+
+我给你那份是"挑几个我知道有用的指标类型，一个一个写规则"（BrokerTopicMetrics、RequestMetrics……枚举式）。官方这份用的是通用正则，比如：
+
+yaml
+- pattern: kafka.(\w+)<type=(.+), name=(.+)><>Value
+  name: kafka_$1_$2_$3
+  type: GAUGE
+
+这一条规则能自动匹配 kafka.server、kafka.network、kafka.controller、kafka.cluster 等任何命名空间下、任何 type、任何 name 的 MBean，不需要你事先知道 Kafka 内部到底暴露了哪些指标名字。这就是真正的"暴尽暴"——我那份是"我猜你可能需要这些"，官方这份是"不管你需不需要，只要 Kafka 吐出来的 JMX 指标，格式对得上就自动转成 Prometheus 格式"。差距不小，建议直接用官方这份，我那份可以扔了。
+
+2. 官方专门加了 KRaft 相关规则，这点很关键
+
+yaml
+- pattern: "kafka.server<type=raft-metrics><>..."
+- pattern: "kafka.server<type=raft-channel-metrics><>..."
+- pattern: "kafka.server<type=broker-metadata-metrics><>..."
+
+你贴的这份 Kafka CR 是 KRaft 模式（KafkaNodePool 拆了 controller/broker 两种角色，没有 ZooKeeper），这几条 raft-* 规则是专门给 KRaft 的共识协议（谁是 leader、日志复制进度）暴露指标用的——这是 ZooKeeper 时代根本不存在的指标类型，我那份完全没考虑到，算是一个真实的遗漏。
+
+3. 一个你需要现在就确认的地方——ConfigMap 名字对不上
+
+官方这份 ConfigMap.metadata.name 是 kafka-metrics，Kafka CR 里 configMapKeyRef.name 也对应引用的是 kafka-metrics；而我之前给你的文件里，ConfigMap 叫 kafka-metrics-config。如果你打算直接套用官方这份的 Kafka CR 片段，两边名字要对齐（用官方的 kafka-metrics 这个名字就行，不用改）。
+
+4. 我没写 JVM 规则，官方也没写——这不是遗漏，是我之前想多了
+
+官方这份完全没有 java.lang<type=Memory>... 这类 JVM 规则，原因是：JMX Prometheus Exporter 这个 javaagent 本身，只要挂载上，默认就会自动导出一批标准 JVM 指标（堆内存、GC、线程），不需要在 rules 里额外声明——rules 只是用来处理"标准 JVM 指标之外、应用自己暴露的自定义 MBean"（也就是 Kafka 自己的业务指标）。所以我之前主动加那几条 JVM 规则其实是画蛇添足，白写了，官方的做法（不写，靠 javaagent 默认行为）才是对的。
+
+一个需要你确认的地方：你实际集群上的 Kafka CR 是不是也已经是这种 KafkaNodePool（controller/broker 分离）+ apiVersion: kafka.strimzi.io/v1 的新写法？如果你之前部署时用的还是老式的单一 Kafka 资源（replicas 字段直接写在 spec.kafka 里，apiVersion: v1beta2），那这份官方示例里 KafkaNodePool 那部分就不能直接套，只需要抄 metricsConfig + ConfigMap 这两段，Kafka CR 本身按你现有的结构改就行——这个我需要你确认一下现状。
+
+直接在你这份 Kafka CR 里加一个 metricsConfig 字段，再拼上 ConfigMap，其余原封不动
+
+中文：
+
+你这份和官方示例结构完全兼容，不用改动 KafkaNodePool，Kafka 资源里只需要在 spec.kafka 下加 4 行 metricsConfig，指向新增的 ConfigMap：
+
+改动点只有两处，其余全部原样保留：
+
+Kafka 资源的 spec.kafka 下新增了 metricsConfig 那 5 行，指向 kafka-metrics ConfigMap
+新增了一个独立的 ConfigMap 对象（--- 分隔），namespace 我按你其他资源的习惯统一设成了 toy-infra，官方示例原文里没写 namespace（默认会用你 kubectl apply 时当前 context 的 namespace，明确写上更保险，不用担心手滑部到别的 namespace 去）
+
+KafkaNodePool 那部分完全没动,因为它跟监控无关。
+
+部署方式：这是一份已有资源的更新，不是新建,所以：
+
+bash
+kubectl apply -f kafka-with-metrics.yaml
+
+Strimzi Operator 检测到 Kafka CR 的 spec 变了(加了 metricsConfig),会对 dual-role 这 3 个 Pod 做滚动重启（一个一个重启,不会同时全挂,因为你配了 min.insync.replicas: 2，滚动过程中集群应该能保持可用）。重启完,每个 broker Pod 会自动注入 JMX Exporter agent,在 9404 端口暴露 /metrics,验证方式跟你之前测 frontend 一样：
+
+bash
+kubectl run curl-test --rm -it --image=curlimages/curl --restart=Never -n toy-infra -- \
+  curl http://my-kafka-dual-role-0.my-kafka-kafka-brokers:9404/metrics

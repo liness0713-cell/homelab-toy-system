@@ -341,7 +341,7 @@ curl http://gateway-service.toy-system.svc.cluster.local:8080/actuator/prometheu
 curl http://policy-service.toy-system.svc.cluster.local:8081/actuator/prometheus
 curl http://notification-service.toy-system.svc.cluster.local:8082/actuator/prometheus
 curl http://search-service.toy-system.svc.cluster.local:8083/actuator/prometheus
-curl http://frontend.toy-system.svc.cluster.local:9113
+curl http://frontend.toy-system.svc.cluster.local:9113/metrics
 
 
 如果 curl-test 这个临时 Pod 本身就在 toy-system namespace 里跑（默认会用 kubectl 当前 context 的 namespace，可以加 -n toy-system 指定），Service 短名也能用：
@@ -381,3 +381,64 @@ alpine — 最轻量的通用 Linux，需要装点什么临时用 apk add xxx（
 nicolaka/netshoot 其实也能当万能应急 shell 用，功能比 alpine 全，我个人更推荐直接用它当默认选择
 
 给你一个记忆点：以后遇到"这玩意儿到底通不通"的疑问，第一反应就是 kubectl run xxx --rm -it --image=nicolaka/netshoot -- bash，这一个镜像基本能覆盖 80% 的排障场景，不用每次纠结用哪个专用工具。
+
+## 可以curl pod吗？我想看/nginx_status本身什么样，可以进容器直接curl吗？
+可以，两种方式，看你想验证哪个层面
+
+中文：
+
+方式一：直接 exec 进 Pod 里的 nginx-exporter 容器（推荐，因为这个容器本身就是干"curl它"这件事的，镜像里通常自带基础工具，而且能同时验证"exporter 和 stub_status 之间到底通不通"这个你现在最想确认的问题）：
+
+bash
+kubectl exec -it <pod名> -n toy-system -c nginx-exporter -- sh
+
+进去之后（Pod 内所有容器共享同一个网络命名空间，所以能直接用 127.0.0.1）：
+
+bash
+wget -O - http://127.0.0.1:8080/nginx_status
+# 或者，如果这个镜像刚好带curl
+curl http://127.0.0.1:8080/nginx_status
+
+nginx-exporter 官方镜像基础比较精简，可能没有 curl，wget 一般会有；如果两个都没有，就换方式二。
+
+方式二：exec 进 frontend 容器本身——但这里有个前提要先确认：你的 nginx 是从 alpine 基础镜像编译的，官方 nginx:alpine 默认不带 curl/wget，进去大概率会遇到 command not found。可以先试试：
+
+bash
+kubectl exec -it <pod名> -n toy-system -c frontend -- sh
+wget -O - http://127.0.0.1:8080/nginx_status
+
+如果两个容器都没有可用的 HTTP 客户端，退回你之前用过的方法——起一个独立的临时 Pod，但注意它是独立 Pod，跟 frontend Pod 不共享网络命名空间，不能用 127.0.0.1，得走 Service：
+
+bash
+kubectl run curl-test --rm -it --image=curlimages/curl --restart=Never -n toy-system -- \
+  curl http://frontend:9113/metrics
+
+不过这条只能看到 exporter 转换后的 Prometheus 格式指标，看不到 /nginx_status 原始 JSON——因为 stub_status 那个端口 127.0.0.1:8080 根本没有通过 Service 暴露出去（也不应该暴露，它设计上就是 Pod 内部私有端点）。所以想看 /nginx_status 原始样子，必须走方式一或方式二，这也是为什么这类"内部诊断端点"通常故意只监听 127.0.0.1——逼你必须进容器里看，不给外部访问留口子。
+
+## 容器里可以装curl之类的东西吗
+能装，但装完 Pod 一重启就没了——这是个"临时补丁"，不是永久方案
+
+中文：
+
+能装，取决于容器里用的是什么发行版基础镜像，装包命令不一样：
+
+如果基础镜像是 Alpine（你的 nginx-exporter 和 frontend 大概率都是，官方镜像很多默认用 Alpine 追求体积小）：
+
+bash
+kubectl exec -it <pod名> -n toy-system -c frontend -- sh
+apk add --no-cache curl
+
+如果是 Debian/Ubuntu 系：
+
+bash
+kubectl exec -it <pod名> -n toy-system -c frontend -- bash
+apt-get update && apt-get install -y curl
+
+（先 sh 还是 bash 试一下，容器里通常有哪个用哪个，Alpine 一般只有 sh）
+
+几个你需要知道的限制，免得踩坑：
+
+装完立刻能用，但只在这个 Pod 的这一次生命周期里有效——容器的可写层跟你之前问的 access_log 本地文件是同一个道理，Pod 重启/重建/滚动更新，这次装的 curl 就跟着没了，新 Pod 又是一张白纸。这就是为什么我之前建议"起个专门装了 curl 的临时 Pod"（比如 curlimages/curl）——那个思路是把工具打进镜像里，而不是运行时现装，更符合"调试用完即焚"的做法，不用你每次都重新 apk add。
+有些精简镜像可能没有包管理器,或者容器以非 root 用户运行导致装不了包——比如某些"distroless"镜像，连 apk/apt 命令本身都不存在，这种情况现装是装不了的，只能换方式一/方式二里提到的 wget（如果有），或者外部起 curl Pod 走 Service。
+只是临时调试就用这个方法完全没问题,但不要把"进生产 Pod 装工具"当成习惯性操作——生产环境的镜像通常刻意做得越精简越好（减小攻击面、减小体积），临时装包这个动作本身在真实生产环境里很多团队会有告警甚至审计,因为这可能是被入侵后攻击者在装工具的信号。你现在是 homelab 学习环境，随便用没问题，只是提前告诉你这个"实践 vs 生产纪律"的差异。
+

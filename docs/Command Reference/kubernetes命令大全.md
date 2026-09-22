@@ -393,6 +393,7 @@ kubectl get events -A --sort-by='.lastTimestamp' | tail -30
 
 *生成于 2026-08-15，配合你的 P1-P11 k3s homelab 进度整理，建议存到你的 homelab 文档仓库里持续补充。*
 
+##
 sudo crictl pull localhost:5000/search-service:202609020807-3805cc8
 # 这是让节点上的containerd直接去拉取（下载）这个镜像，不通过Kubernetes调度，用来单独验证"这台机器能不能连到你的私有镜像仓库"。
 逐段拆解：
@@ -405,3 +406,10 @@ localhost:5000/search-service:202609020807-3805cc8 —— 镜像的完整地址�
 用它测试的好处是：跳过Pod调度、跳过Deployment，直接问containerd"你能不能连到仓库、下载到这个镜像"，把问题范围缩小到网络/镜像仓库这一层，排除掉K8s其他部分的干扰。
 
 如果拉取成功，会看到类似Image is up to date for sha256:...；如果失败，报错信息（比如connection refused、x509证书错误等）能直接告诉你是网络不通还是TLS配置的问题。
+
+
+## 用 kubectl debug 注入一个临时的"陪跑容器"（ephemeral container）进这个 Pod，这是 k8s 专门为这种"目标容器没 shell 没工具"场景设计的调试手段：
+kubectl debug -it frontend-599b98d9b9-6z65g -n toy-system \
+  --image=curlimages/curl \
+  --target=frontend \
+  -- sh
