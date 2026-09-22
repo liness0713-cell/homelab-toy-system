@@ -323,3 +323,56 @@ node:22-alpine、nginx:alpine、eclipse-temurin:21-jre这些基础镜像，内�
 一句话总结这个区别
 
 "完整的Linux系统"如果指的是"一整套用户态文件系统+能跑各种程序"，容器确实是这样；但如果指的是"有自己独立的内核"，容器不是，虚拟机才是——这也是容器比虚拟机轻量得多的根本原因，代价是隔离性比虚拟机弱一些(理论上，一个精心构造的容器逃逸漏洞，有可能影响到共享的宿主机内核，虚拟机的隔离边界更硬)。
+
+## 怎么在集群内curl一下？
+起一个临时 Pod，进去 curl 就行
+
+中文：
+
+浏览器能访问是因为走的是 Ingress（外部路径）。集群内部验证要走 Service DNS，不是走 Ingress，最简单的办法是起一个一次性的调试 Pod：
+
+bash
+kubectl run curl-test --rm -it --image=curlimages/curl --restart=Never -- sh
+
+进去之后（假设 gateway-service 部署在 toy-system namespace，Service 名字也叫 gateway-service，端口是你 application.yml 里配的那个，比如 8080）：
+
+bash
+curl http://gateway-service.toy-system.svc.cluster.local:8080/actuator/prometheus
+
+如果 curl-test 这个临时 Pod 本身就在 toy-system namespace 里跑（默认会用 kubectl 当前 context 的 namespace，可以加 -n toy-system 指定），Service 短名也能用：
+
+bash
+curl http://gateway-service:8080/actuator/prometheus
+
+退出这个 shell（exit）后，因为加了 --rm，Pod 会自动删除，不留垃圾。
+
+这一步的意义：这其实是在提前验证"Prometheus 未来能不能抓到这个指标"——因为 Prometheus 本身也是从集群内部、通过同样的 Service DNS 机制去 scrape 各个 Pod，你现在手动 curl 一次通了，等于帮 Prometheus 提前排除了网络层面的坑。
+
+## 还有哪些测试好用的一次性工具？
+
+常用的几个「用完即焚」调试镜像
+
+中文：
+
+curlimages/curl 只是其中一个，按用途分类整理几个你以后会经常用到的：
+
+网络/HTTP 类
+
+curlimages/curl — 就是你刚用的，测 HTTP 端点
+nicolaka/netshoot — 网络排障的瑞士军刀，一个镜像塞满了 curl、dig、nslookup、traceroute、tcpdump、nc、iperf 等几十个工具，排查"DNS 解析不到"、"连接超时"这类疑难杂症时特别好用，比一个个单独装省事很多
+
+DNS 专项
+
+busybox — 极简镜像自带 nslookup，验证 Service DNS 名字能不能解析（比如确认 gateway-service.toy-system.svc.cluster.local 真的能被解析成 ClusterIP）
+
+数据库/中间件连接类（对你验证宿主机 MySQL/Redis 无 selector Service 特别有用）
+
+mysql:8（临时起来只用它自带的 mysql 客户端） — kubectl run mysql-client --rm -it --image=mysql:8 --restart=Never -- mysql -h mysql-external.toy-system.svc.cluster.local -u root -p
+redis:7 同理，自带 redis-cli
+
+通用 Shell / 万能应急
+
+alpine — 最轻量的通用 Linux，需要装点什么临时用 apk add xxx（注意默认没有 curl/dig，得手动装）
+nicolaka/netshoot 其实也能当万能应急 shell 用，功能比 alpine 全，我个人更推荐直接用它当默认选择
+
+给你一个记忆点：以后遇到"这玩意儿到底通不通"的疑问，第一反应就是 kubectl run xxx --rm -it --image=nicolaka/netshoot -- bash，这一个镜像基本能覆盖 80% 的排障场景，不用每次纠结用哪个专用工具。
