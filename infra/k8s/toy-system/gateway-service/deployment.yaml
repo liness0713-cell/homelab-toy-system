@@ -4,7 +4,7 @@ metadata:
   name: gateway-service
   namespace: toy-system
 spec:
-  replicas: 3
+  replicas: 1
   selector:
     matchLabels:
       app: gateway-service
@@ -21,7 +21,7 @@ spec:
           effect: "NoSchedule"
       containers:
         - name: gateway-service
-          image: localhost:5000/gateway-service:202608291813-b836314
+          image: localhost:5000/gateway-service:202609220927-ef81920
           ports:
             - containerPort: 8080
           envFrom:
