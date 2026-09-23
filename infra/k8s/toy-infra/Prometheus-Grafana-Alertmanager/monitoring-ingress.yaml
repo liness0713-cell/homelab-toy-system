@@ -1,0 +1,43 @@
+#不包含Grafana，因为它在安装阶段就创建了
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: prometheus-ui
+  namespace: toy-infra
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: prometheus.homelab.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                # ⚠️ 这个名字是从Prometheus Operator的Pod命名规律倒推的，不是100%确认过的，
+                # apply前务必先跑： kubectl get svc -n toy-infra | grep prometheus
+                # 核对实际Service名字，跟这里不一致就以kubectl查到的为准
+                name: kube-prometheus-stack-prometheus
+                port:
+                  number: 9090
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: alertmanager-ui
+  namespace: toy-infra
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: alertmanager.homelab.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                # ⚠️ 同理，未100%确认，apply前先跑：
+                # kubectl get svc -n toy-infra | grep alertmanager
+                name: kube-prometheus-stack-alertmanager
+                port:
+                  number: 9093

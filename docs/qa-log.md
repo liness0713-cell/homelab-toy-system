@@ -442,3 +442,17 @@ apt-get update && apt-get install -y curl
 有些精简镜像可能没有包管理器,或者容器以非 root 用户运行导致装不了包——比如某些"distroless"镜像，连 apk/apt 命令本身都不存在，这种情况现装是装不了的，只能换方式一/方式二里提到的 wget（如果有），或者外部起 curl Pod 走 Service。
 只是临时调试就用这个方法完全没问题,但不要把"进生产 Pod 装工具"当成习惯性操作——生产环境的镜像通常刻意做得越精简越好（减小攻击面、减小体积），临时装包这个动作本身在真实生产环境里很多团队会有告警甚至审计,因为这可能是被入侵后攻击者在装工具的信号。你现在是 homelab 学习环境，随便用没问题，只是提前告诉你这个"实践 vs 生产纪律"的差异。
 
+## 宿主机加一条DNS解析：
+
+bash
+echo "192.168.40.23 alertmanager.homelab.local" | sudo tee -a /etc/hosts
+
+浏览器打开https://kibana.homelab.local(注意这次是https，浏览器可能会因为自签名证书报警告，选择"继续访问"即可)，登录账号密码就是elastic/你之前取到的那串密码。
+
+
+## 登入节点
+ssh ubuntu@192.168.40.32
+ssh ubuntu@k3s-node2
+
+ssh ubuntu@192.168.40.14
+ssh ubuntu@k3s-node3

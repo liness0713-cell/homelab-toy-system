@@ -1726,3 +1726,104 @@ spec:
 改完之后需要重新 kubectl apply 两处：先 apply 那份补了 name: metrics 的 Service（这一步会让 Service 对象本身更新出这个名字),再 apply 更新过的 servicemonitors-k3s.yaml。
 
 顺带把这条规律说透,后面你自己排查会更快：这几次连续踩到同一类坑——4 个 Java 服务、ES exporter,本质都是同一件事：只要某个 Service 打算被 ServiceMonitor 抓取,它的端口就必须有 name,没有例外,不管端口是一个还是多个。K8s 自己的规则（单端口可以不起名）和 Prometheus Operator 的规则（必须起名）是两套独立标准,凑巧单端口这边更宽松,容易让人误以为"能省则省",但只要牵扯到 ServiceMonitor,这个宽松就不成立了。以后你自己写新的 Service,只要这个服务会被监控,直接养成"端口必须带 name"的肌肉记忆,不用等报错再回头补。
+
+
+## 帮我写一下ingress规则
+假设你要的是 Prometheus 和 Alertmanager 的 Ingress——Grafana 那份其实已经在 values.yaml 里配过了
+
+中文：
+
+先说明一下我的判断：Grafana 的 Ingress 我在上次的 kube-prometheus-stack-values.yaml 里已经通过 chart 自带的 grafana.ingress 字段配好了（grafana.homelab.local),装 chart 的时候会自动生成对应的 Ingress 对象,不用你再手写。真正还缺的是 Prometheus UI 和 Alertmanager UI 这两个——目前只能靠 port-forward 临时看,没有走 Ingress。如果你要的正是这两个,我按你现有的 homelab.local 域名习惯（app.homelab.local/api.homelab.local 那一套)补上：
+
+搜出来的结果没有直接给出 Service 名字,但从 Pod 命名规律能倒推出来,不过这里我要说清楚这仍然是推断,不是直接确认——为了不再给你一个我自己都没底的答案,我把命名逻辑讲透,你自己跑一条命令核实,比我瞎猜靠谱。
+
+中文：
+
+搜索结果里有一份真实的部署输出（release 名字是 kube-prometheus-stack）：
+
+alertmanager-kube-prometheus-stack-alertmanager-0
+prometheus-kube-prometheus-stack-prometheus-0
+
+这是 Pod 名字,不是 Service 名字——但 Prometheus Operator 有个固定规律：它管理的 StatefulSet/Pod,名字 = prometheus- 或 alertmanager- 前缀 + 对应的 Prometheus/Alertmanager CRD 对象的名字。从这份 Pod 名倒推,那个 CRD 对象应该叫 kube-prometheus-stack-prometheus 和 kube-prometheus-stack-alertmanager——而面向这个 CRD 对象的 Service,惯例上跟 CRD 同名。所以我原来给你的 kube-prometheus-stack-kube-prometheus-prometheus 大概率是错的（重复了一段 kube-prometheus),更可能是 kube-prometheus-stack-prometheus。
+
+但我不想再给你第二个没验证过的猜测,所以已经把文件改成这个更可能对的版本,并且请你 apply 之前务必自己跑一遍确认,而不是直接信我：
+
+核实方法很简单,而且比我猜的任何名字都可靠：
+
+bash
+kubectl get svc -n toy-infra | grep -E "prometheus|alertmanager"
+
+跑出来的实际 Service 名字,填进 monitoring-ingress.yaml 对应两处的 name: 字段,和我给的猜测不一致就以你查到的为准,然后再 kubectl apply -f monitoring-ingress.yaml。
+
+这里也顺便暴露了一个搜索本身的局限性,值得你知道：这次我搜了好几轮,搜到的都是"别人怎么用"这种间接证据（部署日志、教程片段),没有一份文档直接写"Service 名字规则是 xxx"——这种具体到某个 Helm chart 内部资源命名细节的问题,搜索引擎经常搜不到权威答案,这种时候"自己跑一条 kubectl get 命令直接看"永远比"网上搜别人的经验"更快更准,以后遇到类似"这个 Service/ConfigMap 到底叫什么"的疑问,直接问集群比问我更可靠。
+
+## 应该没问题，缺什么直接跟我要就好，我其实不知道grafana会自动设置ingres
+
+验证结果：两个名字都猜对了——kube-prometheus-stack-prometheus 和 kube-prometheus-stack-alertmanager 完全匹配
+
+中文：
+
+对照你贴的输出,monitoring-ingress.yaml 里那两处 name: 字段不用改,直接可以 kubectl apply -f monitoring-ingress.yaml。
+
+关于 Grafana 的 Ingress——这个我得补充说清楚,因为你这次的疑问点很关键：kubectl get svc 只能看到 Service,看不到 Ingress（这是两种不同的资源类型),所以你这次的输出没法证实 Grafana 的 Ingress 到底建没建。它之所以会自动出现,是因为我更早给你的 kube-prometheus-stack-values.yaml 里有这几行：
+
+yaml
+grafana:
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    hosts:
+      - grafana.homelab.local
+
+kube-prometheus-stack 这个 chart 内部把 Grafana 作为一个子 chart打包进来,Grafana 子 chart 自己就带了"要不要建 Ingress"这个开关——你 helm install 的时候,这段 values.yaml 一起传进去了,chart 就会顺手把 Ingress 对象也建出来,不需要你像 Prometheus/Alertmanager 这样另外手写 YAML。这是 Prometheus 本体、Alertmanager 和 Grafana 三者在"要不要自带 Ingress 开关"这件事上的差异——Grafana chart 设计时就考虑了这个常见需求,直接内置了；Prometheus Operator 那两个组件更偏底层,chart 没有内置这个开关,所以需要你手动补。
+
+验证 Grafana 的 Ingress 确实建出来了：
+
+bash
+kubectl get ingress -n toy-infra
+
+应该能看到三条：kube-prometheus-stack-grafana（chart 自动建的）,加上你刚 apply 的 prometheus-ui、alertmanager-ui。
+
+最后一步,域名能不能解析：这三个 *.homelab.local 域名要能在浏览器里打开,你的本地 DNS//etc/hosts 需要把 grafana.homelab.local、prometheus.homelab.local、alertmanager.homelab.local 都指向 ingress-nginx 的入口 IP——这个应该跟你之前配 app.homelab.local/api.homelab.local 是同一套机制,照抄一份加上这三个新域名就行。
+
+三个界面都能打开之后，这轮 P6 监控搭建（4 个 Java 服务、frontend、Kafka、ES、MySQL、Redis 的指标全部接入 Prometheus，加上 Grafana/Prometheus/Alertmanager 三个界面都能访问）就算真正闭环了。
+
+## node3拉不到镜像，isp dns 路由器好像出问题了
+    Port:          9100/TCP (http-metrics)    Host Port:     9100/TCP (http-metrics)    Args:      --path.procfs=/host/proc      --path.sysfs=/host/sys      --path.rootfs=/host/root      --path.udev.data=/host/root/run/udev/data      --web.listen-address=[$(HOST_IP)]:9100      --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run/containerd/.+|var/lib/docker/.+|var/lib/kubelet/.+)($|/)      --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs|erofs)$    State:          Waiting      Reason:       ImagePullBackOff    Ready:          False    Restart Count:  0    Liveness:       http-get http://:http-metrics/ delay=0s timeout=1s period=10s #success=1 #failure=3    Readiness:      http-get http://:http-metrics/ delay=0s timeout=1s period=10s #success=1 #failure=3    Environment:      HOST_IP:  0.0.0.0    Mounts:      /host/proc from proc (ro)      /host/root from root (ro)      /host/sys from sys (ro)Conditions:  Type                        Status  PodReadyToStartContainers   True   Initialized                 True   Ready                       False   ContainersReady             False   PodScheduled                True Volumes:  proc:    Type:          HostPath (bare host directory volume)    Path:          /proc    HostPathType:    sys:    Type:          HostPath (bare host directory volume)    Path:          /sys    HostPathType:    root:    Type:          HostPath (bare host directory volume)    Path:          /    HostPathType:  QoS Class:         BestEffortNode-Selectors:    kubernetes.io/os=linuxTolerations:       :NoSchedule op=Exists                   node.kubernetes.io/disk-pressure:NoSchedule op=Exists                   node.kubernetes.io/memory-pressure:NoSchedule op=Exists                   node.kubernetes.io/network-unavailable:NoSchedule op=Exists                   node.kubernetes.io/not-ready:NoExecute op=Exists                   node.kubernetes.io/pid-pressure:NoSchedule op=Exists                   node.kubernetes.io/unreachable:NoExecute op=Exists                   node.kubernetes.io/unschedulable:NoSchedule op=ExistsEvents:  Type     Reason            Age                   From     Message  ----     ------            ----                  ----     -------  Warning  Failed            24m (x158 over 70m)   kubelet  spec.containers{node-exporter}: Error: ImagePullBackOff  Warning  Failed            4m29s (x14 over 70m)  kubelet  spec.containers{node-exporter}: Failed to pull image "quay.io/prometheus/node-exporter:v1.12.1-distroless": failed to pull and unpack image "quay.io/prometheus/node-exporter:v1.12.1-distroless": failed to resolve reference "quay.io/prometheus/node-exporter:v1.12.1-distroless": failed to do request: Head "https://quay.io/v2/prometheus/node-exporter/manifests/v1.12.1-distroless": dial tcp: lookup quay.io: Try again  Warning  Failed            4m29s (x14 over 70m)  kubelet  spec.containers{node-exporter}: Error: ErrImagePull  Normal   Pulling           4m14s (x15 over 70m)  kubelet  spec.containers{node-exporter}: Pulling image "quay.io/prometheus/node-exporter:v1.12.1-distroless"  Warning  DNSConfigForming  73s (x187 over 71m)   kubelet  Nameserver limits were exceeded, some nameservers have been omitted, the applied nameserver line is: 192.168.40.1 2001:ff0:2096:20::1 2400:3800:2fc2:20::1  Normal   BackOff           43s (x170 over 70m)   kubelet  spec.containers{node-exporter}: Back-off pulling image "quay.io/prometheus/node-exporter:v1.12.1-distroless"
+
+这次不是配置错误，是 k3s-node3 这台机器本身连不上外网 DNS——跟 Pod 配置无关
+
+中文：
+
+先说清楚两件容易混在一起、但其实互不相关的事,免得排查方向错：
+
+ImagePullBackOff（真正的问题）——containerd（容器运行时,负责真正去拉镜像)是在宿主机层面发起 DNS 查询和网络请求的,用的是这台机器自己的 /etc/resolv.conf,跟 Pod 内部的网络、跟 K8s 的 Service DNS 完全是两套体系。报错 dial tcp: lookup quay.io: Try again 说明 k3s-node3 这台机器本身,没法把 quay.io 解析成 IP——这是节点级别的网络问题,不是 YAML 哪里配错了。
+DNSConfigForming 那条警告（大概率是干扰项,不是病根）——这条讲的是 Pod 内部（容器进程看到的）DNS 配置,跟 containerd 拉镜像用的宿主机 DNS 是两码事,不用围着这条查。
+
+所以排查要去 k3s-node3 这台机器本身,不是改 YAML。 先确认这是不是只发生在这一个节点：
+
+bash
+kubectl get pods -n toy-infra -l app.kubernetes.io/name=prometheus-node-exporter -o wide
+
+node-exporter 是 DaemonSet,理论上每个节点各跑一个,这条命令能看出是"只有 node3 卡住"还是"所有节点都拉不动"。如果只有 node3 有问题,基本可以确认是这台机器（记得你笔记里提过,k3s-node2/k3s-node3 是跑在 Multipass/VirtualBox 里的虚拟机,不是裸机)自己的网络配置出了问题。
+
+登进 k3s-node3 直接测试,而不是猜：
+
+bash
+# 先看这台机器实际用的DNS服务器是谁
+cat /etc/resolv.conf
+
+# 直接测试能不能解析quay.io
+nslookup quay.io
+# 或者
+getent hosts quay.io
+
+# 测试基础网络连通性，排除"根本没网"这种更底层的问题
+ping -c 3 8.8.8.8
+
+几种可能的结果,对应几种不同的修法：
+
+如果 ping 8.8.8.8 都不通：这台虚拟机的网络出了更基础的问题（比如 Multipass/VirtualBox 的虚拟网卡配置、NAT 模式没配好),得从虚拟化层面查,不是 DNS 单独的问题。
+如果 ping 通但 nslookup quay.io 不通：纯 DNS 解析问题。kubectl describe 里那条 DNSConfigForming 警告提到的地址 192.168.40.1 2001:ff0:2096:20::1 2400:3800:2fc2:20::1 看起来像是从宿主机/路由器继承来的 DNS,如果这些地址对这台虚拟机来说根本不可达（比如 IPv6 地址在这个网络环境里走不通),换成确定可达的 DNS（比如 8.8.8.8、1.1.1.1)大概率能解决——具体改 /etc/resolv.conf 还是改 Multipass/VirtualBox 那层的网络配置,取决于这台虚拟机的网络是怎么搭的,这个我需要你告诉我 cat /etc/resolv.conf 和 ping 的实际结果才能往下判断,不然我这边纯猜没意义。
+
+顺带一提,这个不影响你当前监控搭建的整体进度：node-exporter 只是负责采集"宿主机 CPU/内存/磁盘"这类操作系统层面的指标,跟你已经跑通的 MySQL/Redis/Java 服务/Kafka/ES 这几条监控链路完全独立,这几个该有的数据现在都已经在 Grafana 里能查了。node-exporter 修不好,不影响你之前搭的那套指标继续用,可以先跑上面几条命令,把结果发我再往下查。
