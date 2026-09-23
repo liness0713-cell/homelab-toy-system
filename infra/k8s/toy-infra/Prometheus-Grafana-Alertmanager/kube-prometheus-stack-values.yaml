@@ -1,0 +1,54 @@
+# kube-prometheus-stack values - homelab精简版
+# 完整默认values很长（几千行），这里只覆盖需要改动的部分，其余用chart默认值
+
+# --- Prometheus本体 ---
+prometheus:
+  prometheusSpec:
+    retention: 7d              # homelab磁盘有限，默认15d改成7天，够用于练习排查
+    resources:
+      requests: { cpu: 200m, memory: 512Mi }
+      limits: { memory: 1Gi }
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: local-path   # k3s默认自带的StorageClass，你P5就用过
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests: { storage: 10Gi }
+    # 关键：默认这个chart只会抓"带release标签、且和release同namespace"的
+    # ServiceMonitor，会导致你自己手写的ServiceMonitor被忽略。这两行放开限制，
+    # 抓取范围覆盖所有namespace里所有的ServiceMonitor/PodMonitor，不用逐个打标签。
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+
+# --- Grafana ---
+grafana:
+  adminPassword: "${GRAFANA_ADMIN_PASSWORD}"   # 用--set传入，不写死在文件里，见下方命令
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+  persistence:
+    enabled: true
+    storageClassName: local-path
+    size: 2Gi
+  ingress:
+    enabled: true
+    ingressClassName: nginx      # 你P2就用ingress-nginx替换了默认Traefik
+    hosts:
+      - grafana.homelab.local    # 跟app.homelab.local/api.homelab.local同一套域名习惯
+
+# --- Alertmanager：homelab阶段先不配置真实告警通道(邮件/webhook)，
+#     只是把组件跑起来体验界面，告警规则留到后面按需加 ---
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+
+# --- 这几个组件homelab单机场景意义不大，先关掉省资源 ---
+kubeEtcd:
+  enabled: false     # k3s的etcd替代品(embedded)不暴露标准etcd metrics端口，装了也抓不到
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false     # k3s默认用不了标准kube-proxy指标端点(用的是简化实现)

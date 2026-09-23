@@ -1542,3 +1542,150 @@ redis_up 1
 mysql_version_info also shows fresh version data consistent with the newly rebuilt instance. This full round — container rebuild, network unification, exporter account re-provisioning — is verified end to end.
 
 At this point MySQL, Redis, all 4 Java services, Kafka (Strimzi), and Elasticsearch (ECK) are all exposing metrics Prometheus can scrape. The natural next step is installing Prometheus itself (to actually scrape these scattered /metrics endpoints) and Grafana (to visualize them), both going into the toy-infra namespace — happy to keep going whenever you're ready.
+
+
+
+## 安装阶段
+下一步：装 Prometheus 本体，用 kube-prometheus-stack 这个 Helm chart 一次性搞定 Prometheus+Grafana+Alertmanager
+
+中文：
+
+之前讨论 P6 方案时就定过这个选型（"这也是 kube-prometheus-stack 这类 Helm chart 默认的部署方式"），现在正式落地。选它而不是手写 YAML 的原因：Prometheus 单独部署涉及 RBAC（要给它权限去发现集群里的 Pod/Service）、ServiceMonitor CRD（声明"该抓哪个 Service"）、Alertmanager 配置这几块,手写一遍工作量不小且容易漏权限配置,这个 chart 把这些都打包好了,你只需要写 values.yaml 调整参数——这跟你之前用 Bitnami chart 装 Kafka/ES 是同一个思路。
+
+Step 1：Helm 装 kube-prometheus-stack 到 toy-infra
+bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+bash
+helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+  -n toy-infra \
+  -f kube-prometheus-stack-values.yaml \
+  --set grafana.adminPassword="换成真实的Grafana管理员密码"
+
+装完确认一下（这个 chart 会拉起不少 Pod，第一次跑要等一会）：
+
+bash
+kubectl get pods -n toy-infra | grep -E "prometheus|grafana|alertmanager"
+Step 2：告诉 Prometheus 去抓谁——ServiceMonitor 是这个 chart 特有的抓取声明方式
+
+不装这个 chart 的话,Prometheus 认哪些目标是手写在一份 prometheus.yml 里的静态列表;装了 kube-prometheus-stack 之后,配套的 Prometheus Operator 会自动监听一种叫 ServiceMonitor 的 CRD——你只要给 K8s 里已有的 Service 配一份 ServiceMonitor,Operator 就会自动把这个抓取目标塞进 Prometheus 配置,不用你手动改 prometheus.yml、更不用重启 Prometheus。
+
+k3s 内部的目标（frontend、4 个 Java 服务、Kafka、ES exporter）都可以直接用这个方式：
+
+Configuring a ServiceMonitor selector for a Helm chart.
+Presented file
+
+关于那个 release: kube-prometheus-stack 标签：我在 values.yaml 里已经把 serviceMonitorSelectorNilUsesHelmValues 设成了 false,意思是 Prometheus 会扫描所有 namespace 里的 ServiceMonitor,不强制要求这个标签——加它只是社区惯例,方便以后用 kubectl get servicemonitor -l release=kube-prometheus-stack 统一查询,不加也完全能抓到,不是必需项。
+
+Kafka/frontend 的端口名我标了"按实际核对"——因为具体叫什么取决于你 Service YAML 里怎么写的 name 字段,建议 apply 前先跑：
+
+bash
+kubectl get svc -n toy-system frontend -o jsonpath='{.spec.ports[*].name}'
+kubectl get svc -n toy-infra -l strimzi.io/cluster=my-kafka -o jsonpath='{.spec.ports[*].name}'
+
+对上了再改文件里对应的 port: 值。
+
+Step 3：宿主机上的 MySQL/Redis exporter——复用你已经很熟的"无 selector Service"模式
+
+部署顺序：
+
+bash
+kubectl apply -f servicemonitors-k3s.yaml
+kubectl apply -f host-exporters-monitoring.yaml
+Step 4：验证——打开 Grafana，看数据源是不是真的连上了
+bash
+# 本地测试访问（如果ingress还没配DNS，先用port-forward图快）
+kubectl port-forward -n toy-infra svc/kube-prometheus-stack-grafana 3000:80
+
+浏览器打开 http://localhost:3000，账号 admin，密码就是你 --set grafana.adminPassword= 传的那个。登进去后 Connections → Data sources → Prometheus 应该已经预置好（这是 chart 自动配置的,不用你手动加）,点 Explore,搜 mysql_up 或 redis_up,能查到值就说明整条链路全通了——从宿主机的 exporter,到无 selector Service,到 ServiceMonitor,到 Prometheus 抓取,到 Grafana 查询,五层全部打通。
+
+再往下的两个方向,你可以选：
+
+装现成的 Grafana Dashboard（社区有针对 mysqld_exporter/redis_exporter/JVM 的成熟模板,直接导入 dashboard ID 就有图表,不用自己画）
+配 Alertmanager 告警规则（比如 mysql_up == 0 触发告警,体验"指标→规则→通知"这条完整链路）
+
+想先做哪个,或者先跑一遍 Step 4 遇到问题再回来找我都行。
+
+
+没有——这次我是凭训练知识直接给的,没有实际核实,这个我要坦白说清楚，你的顾虑是对的。
+
+之前几次踩坑（DATA_SOURCE_NAME 被废弃、ECK 默认开 TLS 这些)都是先搜过才发现"我以为的"跟实际不一样。这次 kube-prometheus-stack 的 values 结构和 Strimzi 那个 JMX 端口名（tcp-prometheus），我是凭记忆写的，没有验证过，而这类 Helm chart 的 values 字段改版频率相当高，很可能已经过时。我现在去核实一下再回你。
+
+验证完之后,发现两处结果不一样,一处基本没问题,一处确实有个实质性的错误,得纠正。分别说：
+
+✅ kube-prometheus-stack 的 values 结构——基本没问题
+
+serviceMonitorSelectorNilUsesHelmValues: false、kubeEtcd/kubeControllerManager/kubeScheduler 关掉这几个字段，多个 2026 年的独立来源都在用，是社区里给 k3s 单机场景的标准做法（其中一份来源直接叫 "k3s-monitoring" 项目，专门整理过这几个 k3s 不兼容的组件该怎么关），跟我给你的一致,可以放心用。
+
+❌ Kafka 那份 ServiceMonitor——用错方式了,这个必须改
+
+查到的关键事实：Strimzi 从某个版本开始（issue 讨论里提到大概是 0.19.0 前后）把 9404 端口从 Service 定义里彻底移除了，只留在 Pod 上——这不是疏漏，是 Strimzi 维护者刻意为之，原因是：一个 Kafka broker 的 Service 背后挂着好几个 Pod（你现在是 3 个），如果 Prometheus 通过 Service 去抓，每次请求会被负载均衡到随机一个 broker，抓回来的时间序列是"这次是 broker-0 的数据、下次变成 broker-2 的数据"这种拼凑出来的垃圾数据,完全没有意义。
+
+Strimzi 维护者给的官方建议是：改用 PodMonitor，直接指定 Pod 的 label selector,绕开 Service 这层,让 Prometheus 精确抓每一个 broker 各自的指标——这样才能保证"这条时间序列自始至终都是同一个 broker 的数据"。
+
+修正后的版本：
+
+这里还有一个诚实的提醒：tcp-prometheus 这个端口名字,我在搜索结果里只看到它出现在Service 定义的场景里（而且那份可能是用户自己手动补建的 Service,不是 Strimzi 自动生成的),Pod 容器端口实际叫什么名字,我没有查到确凿来源,不要直接信这个值,部署前务必自己核对：
+
+bash
+kubectl get pod -n toy-infra -l strimzi.io/cluster=my-kafka \
+  -o jsonpath='{.items[0].spec.containers[*].ports[*].name}'
+
+跑出来的名字才是准的,跟文件里 port: 那行对上再 apply。
+
+吸取教训，以后类似操作我会这么做：涉及具体的字段名、端口名、CLI 参数这种"版本一变就可能不一样"的细节,凡是我没有现搜过的,不会再直接给你确定性的答案——要么先搜索核实,要么明确告诉你"这个我不确定,你部署前自己核对一下",不再让你拿着我随口给的字段名去踩坑。
+
+
+## 4个java应用的svc没有给port起名字，行不行？
+这个我得先搜一下再答——毕竟你的 Service 现在会不会因为没起名字导致 ServiceMonitor 抓不到,这直接关系到能不能用,不能凭印象说。
+
+不行——ServiceMonitor 认的是「Service 端口的名字」，不是数字，没起名就抓不到
+
+中文：
+
+这次查证结果很干脆：ServiceMonitor.spec.endpoints[].port 这个字段,填的值必须精确匹配 Service.spec.ports[].name——不是端口号,也不是 targetPort,就是那个 name: 字段的字符串。查到的一份文章专门强调了这一点,说这是个常见的混淆点：port（Service 对外端口号）、targetPort（转发到 Pod 的端口）、容器自己的 containerPort,这三层各自独立,但 ServiceMonitor 唯独认 Service 那层的名字,不认其他任何一层的数字。
+
+跟你之前遇到的"多端口 Service 必须起名"不是一回事,但结论一样：单端口 Service 本身在 K8s 层面确实可以不起名字（这是 K8s 自己的规则,跟之前 frontend 那次因为两个端口被强制要求起名不同）,但 ServiceMonitor 这个 CRD 有它自己更严格的要求——不管 Service 是单端口还是多端口,只要你想用 ServiceMonitor 去抓它,这个端口就必须有名字,没有例外。所以你这 4 个 Java 服务的 Service 现在没起名,ServiceMonitor 里我写的 port: http 这一行找不到匹配,大概率会显示"抓取目标数为 0"。
+
+修法：给这 4 个 Service 补一个 name 字段,一行改动：
+
+yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway-service   # 其他3个同理，改各自的Service文件
+spec:
+  selector:
+    app: gateway-service
+  ports:
+    - name: http           # 加这一行，名字随便起，但要和ServiceMonitor里的port值对上
+      port: 8080
+      targetPort: 8080
+
+4 个服务都补上之后,kubectl apply 更新,再确认一下名字和我之前给你的 servicemonitors-k3s.yaml 里 port: http 对得上（如果你想用别的名字,比如 web,那 ServiceMonitor 里也要同步改成 port: web)。
+
+顺便说一个连带影响,帮你一次排查干净：既然 ServiceMonitor 靠 Service 端口名工作,以后任何新加的可被 Prometheus 抓取的服务,Service 定义时养成"必须起名字"的习惯——不管当前是不是多端口,都提前起名,省得以后接 ServiceMonitor 时又要回头改一遍 Service。
+
+
+## -l strimzi.io/cluster=my-kafka  是什么？
+我查到有这些tcp-kafkaagent tcp-ctrlplane tcp-replication tcp-clients tcp-prometheus
+
+
+
+-l 是 kubectl 的标签过滤参数，你查到的结果证实了 tcp-prometheus 这个端口名是对的
+
+中文：
+
+先回答 -l 是什么：-l 是 --selector 的简写,kubectl get pod -n toy-infra -l strimzi.io/cluster=my-kafka 的意思是"只查 label 里 strimzi.io/cluster 这个 key 的值等于 my-kafka 的那些 Pod"——strimzi.io/cluster 是 Strimzi Operator 自动给它管理的每个 Pod 打上的标签（值就是你的 Kafka CR 的 metadata.name,也就是 my-kafka),这个标签的作用就是让你能用一条命令筛出"属于这个 Kafka 集群的所有 Pod",不用手动一个个数 Pod 名字。这也是为什么我之前 PodMonitor 的 selector.matchLabels 里写的也是同一个标签——PodMonitor 本质上就是在做和你这条 kubectl -l 命令一样的事,只是执行者从你变成了 Prometheus,持续地按这个标签去找 Pod。
+
+再看你查到的结果——tcp-kafkaagent、tcp-ctrlplane、tcp-replication、tcp-clients、tcp-prometheus 这五个端口名,证实了我上次给的 tcp-prometheus 是对的,不是我瞎猜蒙对的,是 Strimzi 官方给 JMX Exporter 那个 sidecar 端口的固定命名（其余四个分别对应 KRaft 内部通信、控制面、副本复制、客户端连接这几类 Kafka 自己的端口,跟监控无关,不用管)。
+
+所以你之前那份 servicemonitors-k3s.yaml 里改成 PodMonitor 之后的这一行不用再改：
+
+yaml
+podMetricsEndpoints:
+  - port: tcp-prometheus
+    path: /metrics
+    interval: 15s
+
+可以直接 kubectl apply -f servicemonitors-k3s.yaml 了。

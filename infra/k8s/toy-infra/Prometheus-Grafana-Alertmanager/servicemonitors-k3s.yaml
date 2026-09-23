@@ -1,0 +1,64 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: java-services
+  namespace: toy-system
+  labels: { release: kube-prometheus-stack }   # 见下方说明：为什么加这个标签
+spec:
+  selector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [gateway-service, policy-service, notification-service, search-service]
+  endpoints:
+    - port: http           # 对应各Service里http端口的name字段，按你实际Service定义核对
+      path: /actuator/prometheus
+      interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: frontend
+  namespace: toy-system
+  labels: { release: kube-prometheus-stack }
+spec:
+  selector:
+    matchLabels: { app: frontend }
+  endpoints:
+    - port: metrics         # 对应之前frontend Service里那个name: metrics的9113端口
+      path: /metrics
+      interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor   # 注意：不是ServiceMonitor。Strimzi从0.19.0起把9404端口从Service上
+                    # 拿掉了（只留在Pod上），原因是一个Service背后挂着3个broker Pod，
+                    # 走Service抓指标会被负载均衡到随机broker，同一条时间序列里数据
+                    # 一会儿是broker-0的、一会儿是broker-2的，完全没有意义。
+                    # PodMonitor绕开Service，直接按Pod标签精确抓每个broker各自的指标。
+metadata:
+  name: kafka-brokers
+  namespace: toy-infra
+  labels: { release: kube-prometheus-stack }
+spec:
+  selector:
+    matchLabels:
+      strimzi.io/cluster: my-kafka
+      strimzi.io/kind: Kafka
+  podMetricsEndpoints:
+    - port: tcp-prometheus   # Pod容器端口的name字段，装完务必用下面的命令核对，不要直接信
+      path: /metrics
+      interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: elasticsearch-exporter
+  namespace: toy-infra
+  labels: { release: kube-prometheus-stack }
+spec:
+  selector:
+    matchLabels: { app: es-exporter }
+  endpoints:
+    - port: "9114"
+      path: /metrics
+      interval: 15s

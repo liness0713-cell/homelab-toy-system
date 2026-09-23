@@ -7,5 +7,6 @@ spec:
   selector:
     app: policy-service
   ports:
-    - port: 8081
+    - name: http           # 加这一行，名字随便起，但要和ServiceMonitor里的port值对上
+      port: 8081
       targetPort: 8081

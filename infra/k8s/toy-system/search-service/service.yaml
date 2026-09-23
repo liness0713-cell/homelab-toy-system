@@ -7,5 +7,6 @@ spec:
   selector:
     app: search-service
   ports:
-    - port: 8083
+    - name: http           # 加这一行，名字随便起，但要和ServiceMonitor里的port值对上
+      port: 8083
       targetPort: 8083

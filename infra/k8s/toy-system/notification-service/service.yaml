@@ -7,5 +7,6 @@ spec:
   selector:
     app: notification-service
   ports:
-    - port: 8082
+    - name: http           # 加这一行，名字随便起，但要和ServiceMonitor里的port值对上
+      port: 8082
       targetPort: 8082
