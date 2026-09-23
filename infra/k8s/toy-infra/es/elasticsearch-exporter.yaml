@@ -44,4 +44,5 @@ metadata:
 spec:
   selector: {app: es-exporter}
   ports:
-    - port: 9114
+    - name: metrics
+      port: 9114

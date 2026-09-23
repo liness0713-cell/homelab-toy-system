@@ -1,3 +1,9 @@
+#宿主机上的 MySQL/Redis exporter——复用"无 selector Service"模式，即定义了服务又定义了ServiceMonitor
+#上面重写了host的无 selector Service，加了port名字，label等
+#下面的配置就废弃了
+#/home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-infra/host-mysql-redis/mysqld-exporter.yaml
+#/home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-infra/host-mysql-redis/redis-exporter.yaml
+
 apiVersion: v1
 kind: Service
 metadata:
@@ -8,6 +14,7 @@ spec:
   ports:
     - name: metrics
       port: 9104
+      targetPort: 9104
 ---
 apiVersion: discovery.k8s.io/v1
 kind: EndpointSlice
@@ -33,6 +40,7 @@ spec:
   ports:
     - name: metrics
       port: 9121
+      targetPort: 9121
 ---
 apiVersion: discovery.k8s.io/v1
 kind: EndpointSlice
@@ -48,6 +56,7 @@ ports:
 endpoints:
   - addresses: ["192.168.40.23"]
 ---
+# 下面的ServiceMonitor配置，跟上面host-exporters Service/EndpointSlice配合使用
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:

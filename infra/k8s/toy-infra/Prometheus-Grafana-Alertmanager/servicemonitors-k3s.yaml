@@ -1,3 +1,4 @@
+#k3s集群内的ServiceMonitor配置，监控各个Service的指标
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
@@ -59,6 +60,6 @@ spec:
   selector:
     matchLabels: { app: es-exporter }
   endpoints:
-    - port: "9114"
+    - port: metrics
       path: /metrics
       interval: 15s

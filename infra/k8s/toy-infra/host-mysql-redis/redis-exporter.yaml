@@ -1,3 +1,5 @@
+#引入prometheus后，该配置被下面的文件取代
+#/home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-infra/Prometheus-Grafana-Alertmanager/host-exporters-monitoring.yaml
 apiVersion: v1
 kind: Service
 metadata:

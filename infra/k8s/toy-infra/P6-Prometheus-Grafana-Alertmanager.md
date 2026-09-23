@@ -1689,3 +1689,40 @@ podMetricsEndpoints:
     interval: 15s
 
 可以直接 kubectl apply -f servicemonitors-k3s.yaml 了。
+
+
+## release: kube-prometheus-stack 为什么要打这个标签？
+es的port直接用 "9114"可以吗？它的名字就是端口号？
+
+两个问题分开答：一个是历史遗留提示，一个是真实的配置错误
+
+中文：
+
+关于 release: kube-prometheus-stack 这个标签——之前给 Kafka 那份文件时其实解释过一次：因为 values.yaml 里已经把 serviceMonitorSelectorNilUsesHelmValues 设成了 false,意思是 Prometheus 不看这个标签,扫描所有 namespace 里的所有 ServiceMonitor。这个标签现在对你来说纯粹是摆设,不影响抓取结果——加不加都一样能被抓到。之所以我还是习惯性加上,是因为如果哪天你把这个值改回默认（true 或者不写),Prometheus 就会只认带这个标签的 ServiceMonitor,提前打好标签能省一次以后回头补的麻烦。留着无害,删了也没问题,你可以按自己喜好定。
+
+关于 port: "9114" ——这个不行,得先查我自己写错的一个地方。
+
+你问"名字就是端口号"这个猜测,思路是对的方向,但答案是：不是自动的,要看当初 Service 定义时有没有手动把 name 写成 "9114" 这个字符串。ServiceMonitor 的 port 字段认的是 Service.spec.ports[].name 这个字符串,不会自动拿端口号当名字用。
+
+我翻了一下之前给你的 elasticsearch-exporter 那份 Service 定义,原文是这样的：
+
+yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch-exporter
+  namespace: toy-infra
+spec:
+  selector: {app: es-exporter}
+  ports:
+    - port: 9114
+
+这里根本没写 name 字段——跟你之前遇到的 4 个 Java 服务是同一类问题,单端口 Service 在 K8s 层面确实可以不起名字,但 ServiceMonitor 硬性要求端口必须有名字,这份 Service 现在不满足条件,port: "9114" 这行必然匹配不到,应该也是"抓取目标数为 0"。
+
+修法：给这份 Service 补上 name：
+
+这份 Service 当时是直接写在回复里的,没有存成文件,你需要在你自己保存的那份 YAML 里手动补上这一行 name: metrics。同步把 servicemonitors-k3s.yaml 里对应的 ServiceMonitor 也改一下：
+
+改完之后需要重新 kubectl apply 两处：先 apply 那份补了 name: metrics 的 Service（这一步会让 Service 对象本身更新出这个名字),再 apply 更新过的 servicemonitors-k3s.yaml。
+
+顺带把这条规律说透,后面你自己排查会更快：这几次连续踩到同一类坑——4 个 Java 服务、ES exporter,本质都是同一件事：只要某个 Service 打算被 ServiceMonitor 抓取,它的端口就必须有 name,没有例外,不管端口是一个还是多个。K8s 自己的规则（单端口可以不起名）和 Prometheus Operator 的规则（必须起名）是两套独立标准,凑巧单端口这边更宽松,容易让人误以为"能省则省",但只要牵扯到 ServiceMonitor,这个宽松就不成立了。以后你自己写新的 Service,只要这个服务会被监控,直接养成"端口必须带 name"的肌肉记忆,不用等报错再回头补。
