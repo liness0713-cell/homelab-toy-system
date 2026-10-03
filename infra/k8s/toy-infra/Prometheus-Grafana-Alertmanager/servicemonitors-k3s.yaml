@@ -47,6 +47,9 @@ spec:
       strimzi.io/kind: Kafka
   podMetricsEndpoints:
     - port: tcp-prometheus   # Pod容器端口的name字段，装完务必用下面的命令核对，不要直接信
+    # kubectl get pod my-kafka-dual-role-0 -n toy-infra -o yaml  | grep  -B 16 tcp-prometheus
+    # kubectl get pod my-kafka-dual-role-1 -n toy-infra -o yaml  | grep  -B 16 tcp-prometheus
+    # kubectl get pod my-kafka-dual-role-2 -n toy-infra -o yaml  | grep  -B 16 tcp-prometheus
       path: /metrics
       interval: 15s
 ---
