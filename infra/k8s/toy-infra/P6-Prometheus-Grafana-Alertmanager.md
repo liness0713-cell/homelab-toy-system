@@ -1827,3 +1827,314 @@ ping -c 3 8.8.8.8
 如果 ping 通但 nslookup quay.io 不通：纯 DNS 解析问题。kubectl describe 里那条 DNSConfigForming 警告提到的地址 192.168.40.1 2001:ff0:2096:20::1 2400:3800:2fc2:20::1 看起来像是从宿主机/路由器继承来的 DNS,如果这些地址对这台虚拟机来说根本不可达（比如 IPv6 地址在这个网络环境里走不通),换成确定可达的 DNS（比如 8.8.8.8、1.1.1.1)大概率能解决——具体改 /etc/resolv.conf 还是改 Multipass/VirtualBox 那层的网络配置,取决于这台虚拟机的网络是怎么搭的,这个我需要你告诉我 cat /etc/resolv.conf 和 ping 的实际结果才能往下判断,不然我这边纯猜没意义。
 
 顺带一提,这个不影响你当前监控搭建的整体进度：node-exporter 只是负责采集"宿主机 CPU/内存/磁盘"这类操作系统层面的指标,跟你已经跑通的 MySQL/Redis/Java 服务/Kafka/ES 这几条监控链路完全独立,这几个该有的数据现在都已经在 Grafana 里能查了。node-exporter 修不好,不影响你之前搭的那套指标继续用,可以先跑上面几条命令,把结果发我再往下查。
+
+
+任务计划(建议顺序略有调整)
+
+先说一个调整:你列的 6 项里漏了一个根因项。上次测出来 Pod 里连 mysqld-exporter.toy-infra.svc.cluster.local 都解析不了,这是集群内部 DNS(CoreDNS)的问题。1、2、3、4 的"no data"都可能是它造成的,所以先查它,再逐项修。
+
+中文
+
+第 0 步(新增):查集群内部 DNS
+
+跑上次留的两条命令:cat /etc/resolv.conf 看 Pod 的 DNS 指向,以及 nslookup ... 10.43.0.10 直连 CoreDNS。
+再看 kubectl logs -n kube-system -l k8s-app=kube-dns --tail 50。
+完成标准:Pod 里 nslookup mysqld-exporter.toy-infra.svc.cluster.local 能出 IP。
+
+第 1 步(原 5):核对所有机器的 DNS
+
+宿主机 ziqiao-ASM100、k3s-node2、k3s-node3 各跑 resolvectl status | grep -A2 "DNS Servers"。
+上次你只改了每台的第一块网卡,第二块还是 ISP 的地址,这次两块都写 1.1.1.1 8.8.8.8(改 netplan 并 netplan apply)。
+完成标准:每台机器所有网卡的 DNS 都是这两个。
+
+第 2 步:打开 Prometheus 的 Targets 页面(prometheus.homelab.local → Status → Targets)
+
+这一页能直接看到每个抓取目标是 UP 还是 DOWN,以及具体报错。第 2 到 5 步都靠它判断,不用再猜。
+
+第 3、4 步(原 1、2):MySQL / Redis
+
+看 host-exporters 对应的目标是不是 UP。
+如果是 UP 但面板仍然 no data,可能是 Dashboard 顶部的 instance / job 下拉变量没选对,不是没有数据。
+
+第 5 步(原 3):4 个 Java 服务
+
+确认 4 个 Service 的端口都写了 name: http,并且已 apply。
+确认 java-services 这个 ServiceMonitor 已 apply,Targets 里能看到 4 个 UP。
+完成标准:curl .../actuator/prometheus 通,Targets 页面 4 个 UP。
+
+第 6 步(原 4):前端 nginx
+
+有。stub_status 加 nginx-prometheus-exporter sidecar 已经配好,servicemonitors-k3s.yaml 里也有 frontend 那条。
+只需确认它已 apply,并且 Targets 里是 UP,不需要重新做。
+
+第 7 步(原 6):学习
+
+等前面都正常了再开始。每次只挑一个指标,比如 mysql_up、kafka_server_replicamanager_underreplicatedpartitions、node-exporter 的 CPU/内存,截图问我。
+日本語
+
+ステップ0(追加):クラスタ内部(ないぶ)DNS(CoreDNS)の確認(かくにん)。Pod内(ない)から.svc.cluster.localが引(ひ)けないのが根本(こんぽん)原因(げんいん)の可能性(かのうせい)が高(たか)いので、最初(さいしょ)に見(み)ます。
+
+ステップ1(元(もと)の5):全(すべ)てのマシンの全(すべ)てのNICにDNS 1.1.1.1 8.8.8.8を設定(せってい)。前回(ぜんかい)は1枚目(まいめ)だけだったので、2枚目(まいめ)も直(なお)します。
+
+ステップ2:PrometheusのTargetsページで、各(かく)ターゲットがUP/DOWNか確認(かくにん)。以降(いこう)の判断材料(はんだんざいりょう)になります。
+
+ステップ3〜5(元の1・2・3):MySQL、Redis、Java 4サービス。Targetsで状態(じょうたい)を見(み)て、UPなのにno dataならDashboardのinstance/job変数(へんすう)を確認(かくにん)します。
+
+ステップ6(元の4):nginxの監視(かんし)は設定済(せっていず)みです。applyされてTargetsでUPか確認(かくにん)するだけです。
+
+ステップ7(元の6):学習(がくしゅう)は最後(さいご)。1回(かい)に1つの指標(しひょう)だけ選(えら)んで質問(しつもん)してください。
+
+English
+Step 0 (new): check in-cluster DNS (CoreDNS). Pods couldn't resolve .svc.cluster.local, which may be behind all the "no data" panels.
+Step 1 (your #5): set 1.1.1.1 8.8.8.8 on every NIC of every machine. Last time only the first NIC was changed.
+Step 2: open Prometheus → Status → Targets. It shows which targets are UP or DOWN and why. Steps 3–6 depend on it.
+Steps 3–5 (your #1–3): MySQL, Redis and the 4 Java services. If a target is UP but a panel still shows no data, check the dashboard's instance / job dropdowns.
+Step 6 (your #4): nginx monitoring already exists (stub_status plus the exporter sidecar and a ServiceMonitor). Just confirm it's applied and UP.
+Step 7 (your #6): learn last, one metric at a time.
+
+下班后从第 0 步开始,把命令输出贴给我就行。
+
+ubuntu@k3s-node2:~$ resolvectl status | grep -A2 "DNS Servers"
+       DNS Servers: 8.8.8.8 1.1.1.1 fd17:625c:f037:2::3
+        DNS Domain: zaq.ne.jp
+     Default Route: yes
+--
+       DNS Servers: 192.168.40.1 2001:ff0:2096:20::1 2400:3800:2fc2:20::1
+        DNS Domain: lan zaq.ne.jp
+     Default Route: yes
+
+教我改一下，永久版的
+
+永久版：关键是 netplan 里让两块网卡都「忽略 DHCP 下发的 DNS」，再写死自己的
+
+你现在这块网卡（DNS Domain: zaq.ne.jp 那组）已经是 8.8.8.8 1.1.1.1，应该是上次改的。第二组（192.168.40.1 和 ISP 的 IPv6 地址）是 DHCP 或路由器通告下发的，还没改。只写 nameservers 不够，必须同时写 dhcp4-overrides: use-dns: false，否则 DHCP 的地址仍会并存。
+
+我没看到你的 netplan 文件内容和第二块网卡的名字，下面的名字是占位，请按实际替换。
+
+中文
+
+1. 查网卡名和现有配置
+
+bash
+ip -br a
+ls /etc/netplan/
+sudo cat /etc/netplan/*.yaml
+
+enp0s3（10.0.2.15）是已知的。第二块是走 192.168.40.x 的那块，名字可能是 enp0s8，以 ip -br a 输出为准。
+
+2. 防止 cloud-init 把 netplan 改回去（Multipass 虚拟机常见）
+
+bash
+echo 'network: {config: disabled}' | sudo tee /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+
+否则重启后 50-cloud-init.yaml 可能被重新生成，你的修改就丢了。
+
+3. 编辑 netplan 文件（用第 1 步看到的文件名）
+
+bash
+sudo nano /etc/netplan/50-cloud-init.yaml
+
+让两块网卡都有这几行，保留你原来的其他字段：
+
+yaml
+network:
+  version: 2
+  ethernets:
+    enp0s3:
+      dhcp4: true
+      dhcp4-overrides:
+        use-dns: false
+      nameservers:
+        addresses: [1.1.1.1, 8.8.8.8]
+    enp0s8:                      # 换成你的第二块网卡名
+      dhcp4: true
+      dhcp4-overrides:
+        use-dns: false
+      nameservers:
+        addresses: [1.1.1.1, 8.8.8.8]
+
+4. 用 try 应用，不要直接 apply
+
+bash
+sudo netplan try
+
+你是 SSH 登录的，改错网卡配置会把自己锁在外面。try 在 120 秒内没确认会自动回滚，确认无误按回车。
+
+5. 验证
+
+bash
+resolvectl status | grep -A2 "DNS Servers"
+nslookup ghcr.io
+
+6. 重启后再验证一次
+
+bash
+sudo reboot
+# 回来后
+resolvectl status | grep -A2 "DNS Servers"
+
+一个不确定点：use-dns: false 管的是 DHCP 下发的 DNS。ISP 的 IPv6 地址（2001:ff0:...）可能是通过路由器通告（RA）来的，不一定被它屏蔽。如果第 5 步后它还在，把输出发给我，我们再处理。对你来说影响不大，因为 systemd-resolved 会挑能用的上游。
+
+日本語
+
+ポイント：nameserversを書(か)くだけでは足(た)りません。dhcp4-overrides: use-dns: falseも一緒(いっしょ)に書(か)かないと、DHCPのDNSが残(のこ)ります。
+
+手順(てじゅん)：①ip -br aでNIC名(めい)確認(かくにん) → ②cloud-initのネットワーク管理(かんり)を無効化(むこうか)（再起動(さいきどう)で設定(せってい)が戻(もど)るのを防(ふせ)ぐ） → ③netplanの両(りょう)NICにuse-dns: falseとnameserversを追加(ついか) → ④sudo netplan tryで適用(てきよう)（120秒(びょう)以内(いない)に確認(かくにん)しないと自動(じどう)ロールバック。SSH接続(せつぞく)中(ちゅう)なので安全(あんぜん)です） → ⑤resolvectl statusで確認(かくにん) → ⑥再起動後(さいきどうご)にもう一度(いちど)確認(かくにん)。
+
+💬 IPv6のISP DNSはRA経由(けいゆ)の可能性(かのうせい)があり、use-dns: falseでは消(き)えないかもしれません。その場合(ばあい)は出力(しゅつりょく)を見(み)せてください。
+
+English
+
+Writing nameservers alone isn't enough. Each NIC also needs dhcp4-overrides: use-dns: false, otherwise the DHCP-provided DNS servers stay in the list.
+
+Steps: check NIC names with ip -br a, disable cloud-init's network management so a reboot doesn't regenerate the file, add both settings to every NIC in the netplan file, apply with sudo netplan try (auto-rollback after 120s, which protects your SSH session), then verify with resolvectl status, and again after a reboot.
+
+One uncertainty: the ISP's IPv6 DNS addresses may come via router advertisements, which use-dns: false may not suppress. If they remain after step 5, send me the output. It's low impact, since systemd-resolved picks a working upstream anyway.
+
+改完后把 resolvectl status 的输出贴给我。node3 和宿主机用同样的方法改。
+
+先去核实一个字段名再回你，避免再给你一个未验证的配置。
+
+原因基本确定:host-exporters 默认用 Endpoints 做发现,而你的无 selector Service 只有 EndpointSlice
+
+你的 host-exporters 配置(label、端口名、EndpointSlice 的 kubernetes.io/service-name)都没问题。它显示 0/0 up,是因为默认的服务发现方式不对。
+
+我刚查了文档:ServiceMonitor 没设置 serviceDiscoveryRole 时,Prometheus Operator 默认用旧的 Endpoints 角色。无 selector Service 不会自动生成 Endpoints 对象,你手写的只有 EndpointSlice,所以发现不到任何目标。解决办法是在这个 ServiceMonitor 上声明用 EndpointSlice 角色。文档里有一个几乎一样的例子(无 selector Service 加手写 EndpointSlice,再加 serviceDiscoveryRole: EndpointSlice)。
+
+前面 Kafka 的 PodMonitor 和 kubelet 能抓到,是因为它们走的是 Pod 和有 selector 的 Service,有 Endpoints,所以不受影响。
+
+批次 2:改你的原文件,只加一行
+
+改 ServiceMonitor 那一段,其余原样保留(Service 和 EndpointSlice 部分不动):
+
+yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: host-exporters
+  namespace: toy-infra
+  labels: { release: kube-prometheus-stack }
+spec:
+  serviceDiscoveryRole: EndpointSlice   # ← 只新增这一行
+  selector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [mysqld-exporter, redis-exporter]
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+
+我只让它作用于这一个 ServiceMonitor,不改全局设置,影响面最小。
+
+apply 之前先验证两件事(这两项我没法替你确认):
+
+bash
+# 1. 你的 CRD 是否支持这个字段(要求 operator v0.76 及以上),有输出说明支持
+kubectl explain servicemonitor.spec.serviceDiscoveryRole
+
+# 2. Prometheus 的 ServiceAccount 是否有读 EndpointSlice 的权限,输出 yes 即可
+kubectl get sa -n toy-infra | grep prometheus
+kubectl auth can-i list endpointslices.discovery.k8s.io -n toy-infra \
+  --as=system:serviceaccount:toy-infra:<上一条查到的 prometheus SA 名>
+
+第 1 条报 field not found,说明 chart 太旧;第 2 条是 no,说明缺 RBAC。两种情况都先告诉我,不要硬 apply。
+
+两批合起来的核对表
+批次	内容	做完怎么确认
+1	6 个 Service 补 metadata.labels(上一条的表)	Targets 新增 java-services、frontend、elasticsearch-exporter 三个 pool,共 6 个目标
+2	host-exporters 加 serviceDiscoveryRole	serviceMonitor/toy-infra/host-exporters/0 变成 2/2 up
+
+两批都 apply 后等一分钟,刷新 Targets,总数应该从 24 个变成 32 个。再到 Query 页面分别输入 mysql_up、redis_up,看到值是 1 就说明 MySQL/Redis 的数据来了。
+
+可能的下一个坑:如果批次 2 之后目标出现但是 DOWN,报 connection refused 或超时,通常是宿主机防火墙挡了从 Pod 网络访问 192.168.40.23 的 9104/9121 端口。到时把 Error 发我,不用现在预防。
+
+日本語
+
+host-exportersのlabelやポート名は正(ただ)しく、原因(げんいん)はサービスディスカバリのロールです。ServiceMonitorは既定(きてい)でEndpointsを使(つか)いますが、selectorless ServiceにはEndpointsが作(つく)られず、手書(てが)きのEndpointSliceしか無(な)いため、ターゲットが見(み)つかりません。spec.serviceDiscoveryRole: EndpointSliceを1行(ぎょう)追加(ついか)してください。applyの前(まえ)に、kubectl explain(CRDの対応(たいおう))とkubectl auth can-i(RBAC)で確認(かくにん)をお願(ねが)いします。
+
+English
+
+host-exporters has correct labels and port names. The real cause is the discovery role: ServiceMonitors default to Endpoints, but a selectorless Service gets no Endpoints object, only your hand-written EndpointSlice. Add spec.serviceDiscoveryRole: EndpointSlice to that one ServiceMonitor. Before applying, confirm your CRD has the field (kubectl explain servicemonitor.spec.serviceDiscoveryRole, needs operator v0.76 or newer) and that Prometheus's ServiceAccount can list EndpointSlices (kubectl auth can-i). After both batches, Targets should grow from 24 to 32.
+
+两条验证命令的输出发我,没问题就可以 apply 批次 2。
+
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/frontend$ kubectl explain servicemonitor.spec.serviceDiscoveryRole
+GROUP:      monitoring.coreos.com
+KIND:       ServiceMonitor
+VERSION:    v1
+
+FIELD: serviceDiscoveryRole <string>
+ENUM:
+    Endpoints
+    EndpointSlice
+
+DESCRIPTION:
+    serviceDiscoveryRole defines the service discovery role used to discover
+    targets.
+
+    If set, the value should be either "Endpoints" or "EndpointSlice".
+    Otherwise it defaults to the value defined in the
+    Prometheus/PrometheusAgent resource.
+
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/frontend$ kubectl get sa -n toy-infra | grep prometheus
+kube-prometheus-stack-alertmanager               13d
+kube-prometheus-stack-grafana                    13d
+kube-prometheus-stack-kube-state-metrics         13d
+kube-prometheus-stack-operator                   13d
+kube-prometheus-stack-prometheus                 13d
+kube-prometheus-stack-prometheus-node-exporter   13d
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/frontend$ kubectl auth can-i list endpointslices.discovery.k8s.io -n toy-infra \
+  --as=system:serviceaccount:toy-infra:kube-prometheus-stack-prometheus
+yes
+
+sa是啥？
+EndpointSlice 和 Endpoint区别是啥？
+
+Explaining Kubernetes concepts and confirming next deployment step.
+两项验证都通过,可以 apply 批次 2
+CRD 里有 serviceDiscoveryRole 字段,取值 Endpoints / EndpointSlice。
+kube-prometheus-stack-prometheus 这个 ServiceAccount 有读 EndpointSlice 的权限(输出 yes)。
+
+改好 host-exporters 的 ServiceMonitor 后:
+
+bash
+kubectl apply -f <你的 host-exporters 文件>
+
+等一分钟,刷新 Targets,serviceMonitor/toy-infra/host-exporters/0 应该变成 2/2 up。
+
+SA 是什么
+
+SA 是 ServiceAccount,是 Pod 访问 Kubernetes API 时用的身份,类似程序的账号。
+
+人用 kubectl 操作集群,用的是你的 kubeconfig 里的身份。
+Pod 里的程序(比如 Prometheus)想调用 API,用的是它所属的 ServiceAccount。
+能做什么,由 RBAC 的 Role/ClusterRole 授权,再绑定到 SA 上。
+
+Prometheus 要靠 API 列出 Service、Pod、EndpointSlice 才能发现目标,所以它的 SA 必须有这些读权限。
+
+你跑的命令里的 --as=system:serviceaccount:toy-infra:kube-prometheus-stack-prometheus 是"冒充"这个身份,问集群"如果我是它,能不能 list EndpointSlice"。格式是 system:serviceaccount:<namespace>:<SA 名>,返回 yes 就是有权限。这是排查"权限不够"类问题的常用办法。
+
+Endpoints 和 EndpointSlice 的区别
+
+两者都回答同一个问题:某个 Service 背后有哪些 IP 和端口。区别在存放方式:
+
+	Endpoints(旧)	EndpointSlice(新)
+存法	一个 Service 对应一个大对象,装所有地址	一个 Service 对应多个小对象,默认每个最多 100 个地址
+大集群的问题	地址一变就整个对象重写、重传;对象过大还会被截断	只更新变化的那一片,开销小
+状态	在 v1.33 起标记为弃用	当前推荐
+
+你之前 kubectl get endpoints 看到的 Warning: v1 Endpoints is deprecated in v1.33+ 就是这个原因。
+
+和你这次问题的关系:有 selector 的 Service,k8s 会同时维护 Endpoints 和 EndpointSlice,所以 Prometheus 用旧的 Endpoints 角色也能发现。无 selector 的 Service 没有人自动生成 Endpoints,你手写的只有 EndpointSlice,默认的 Endpoints 角色就找不到,必须明确告诉 Prometheus 改看 EndpointSlice。
+
+日本語
+
+ServiceAccount(SA)は、PodがKubernetes APIを呼(よ)ぶときの**身元(みもと)**で、権限(けんげん)はRBACで付与(ふよ)します。Prometheusはこれを使(つか)ってEndpointSliceを読(よ)むので、auth can-iがyesなら権限(けんげん)は十分(じゅうぶん)です。Endpointsは1つの大(おお)きなオブジェクトに全(すべ)てのアドレスを入(い)れる旧方式(きゅうほうしき)(v1.33から非推奨(ひすいしょう))、EndpointSliceは小(ちい)さく分割(ぶんかつ)した新方式(しんほうしき)です。selectorless Serviceには自動(じどう)でEndpointsが作(つく)られないため、ロールの指定(してい)が必要(ひつよう)でした。
+
+English
+
+A ServiceAccount (SA) is the identity a Pod uses to call the Kubernetes API, with permissions granted via RBAC. Prometheus needs one that can read EndpointSlices, and your yes confirms it. Endpoints is the old format: one big object per Service holding every address, deprecated since v1.33. EndpointSlice splits the addresses into many small objects, so updates are cheaper. Selectorless Services get no auto-generated Endpoints, which is why the default role found nothing.
+
+apply 后把 Targets 里 host-exporters 那一块的截图发我。

@@ -3,6 +3,8 @@ kind: Service
 metadata:
   name: gateway-service
   namespace: toy-system
+  labels:
+    app: gateway-service
 spec:
   selector:
     app: gateway-service

@@ -41,6 +41,8 @@ kind: Service
 metadata:
   name: elasticsearch-exporter
   namespace: toy-infra
+  labels:
+    app: es-exporter
 spec:
   selector: {app: es-exporter}
   ports:

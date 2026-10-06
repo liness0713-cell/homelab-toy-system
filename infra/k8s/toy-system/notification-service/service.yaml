@@ -3,6 +3,8 @@ kind: Service
 metadata:
   name: notification-service
   namespace: toy-system
+  labels:
+    app: notification-service
 spec:
   selector:
     app: notification-service

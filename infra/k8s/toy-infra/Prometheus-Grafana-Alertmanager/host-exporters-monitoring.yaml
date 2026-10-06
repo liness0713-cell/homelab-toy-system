@@ -64,6 +64,7 @@ metadata:
   namespace: toy-infra
   labels: { release: kube-prometheus-stack }
 spec:
+  serviceDiscoveryRole: EndpointSlice   # ← 只新增这一行
   selector:
     matchExpressions:
       - key: app

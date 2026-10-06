@@ -3,6 +3,8 @@ kind: Service
 metadata:
   name: policy-service
   namespace: toy-system
+  labels:
+    app: policy-service
 spec:
   selector:
     app: policy-service
