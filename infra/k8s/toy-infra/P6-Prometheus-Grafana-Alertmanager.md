@@ -2138,3 +2138,262 @@ English
 A ServiceAccount (SA) is the identity a Pod uses to call the Kubernetes API, with permissions granted via RBAC. Prometheus needs one that can read EndpointSlices, and your yes confirms it. Endpoints is the old format: one big object per Service holding every address, deprecated since v1.33. EndpointSlice splits the addresses into many small objects, so updates are cheaper. Selectorless Services get no auto-generated Endpoints, which is why the default role found nothing.
 
 apply 后把 Targets 里 host-exporters 那一块的截图发我。
+
+
+
+# 下面配置 alertmanager
+grafana暂时没什么问题了，回去之前的加告警，gmail似乎没有应用密码这个页面，你再查一下，下面是当时你给的步骤
+
+Gmail 应用专用密码 + Alertmanager config 字段——需要先查一下确切的 values 语法,不再凭记忆写
+中文：
+alertmanager.config 这块的具体字段结构,同样是"版本一变就可能不一样"的那类细节,按之前吃过的教训,先搜一遍确认再给你,不再直接编。
+搜索确认了：alertmanager.config 确实是官方 chart 的合法字段（从官方仓库源码里能直接看到 alertmanager: config: 这个层级),而且注释写明了这块内容"直接映射 Alertmanager 原生配置文件的语法"（global/route/receivers),说明我准备写的结构方向是对的,可以放心继续。
+Step 1：Gmail 开"应用专用密码"（不是你平时登录用的密码）
+Gmail 从安全考虑,不允许第三方程序直接用你的登录密码发信,需要单独生成一个"应用专用密码":
+
+前提：你的 Google 账号得先开启 两步验证（没开的话先去 myaccount.google.com/security 开)
+打开 myaccount.google.com/apppasswords
+应用名字随便填（比如 “homelab-alertmanager”),生成后会给你一串 16 位不带空格的密码——这个才是等下要填的密码,不是你平时登录 Gmail 用的那个
+Step 2：往 values.yaml 里加 alertmanager.config 这一块
+密码和邮箱地址不写死在文件里——跟当初 Grafana admin 密码一个做法,用 --set 在命令行传入,不落进这份要长期保存的 YAML 文件里：
+bash
+
+helm upgrade kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+  -n toy-infra \
+  -f kube-prometheus-stack-values.yaml \
+  --set grafana.adminPassword="你的Grafana密码" \
+  --set-string 'alertmanager.config.global.smtp_from=你的Gmail地址' \
+  --set-string 'alertmanager.config.global.smtp_auth_username=你的Gmail地址' \
+  --set-string 'alertmanager.config.global.smtp_auth_password=16位应用专用密码（去掉空格）' \
+  --set-string 'alertmanager.config.receivers[0].email_configs[0].to=你的Gmail地址'
+（用 helm upgrade 而不是 helm install,因为这个 release 已经存在,是在原来基础上更新配置,不是重新装一遍）
+Step 3：验证——手动触发一次假告警,看邮件能不能收到
+不用真的把 MySQL 关掉,可以临时改小告警的 for 时间,或者更直接：用 amtool（Alertmanager 自带的命令行工具)手动推一条测试告警,不建议现在折腾这个,更简单的方式是直接把你的 MySQL 容器停一下,等 1 分钟看邮件：
+bash
+
+docker stop toy-mysql
+大概 1 分钟后（对应规则里 for: 1m)去查 Gmail,应该能收到一封标题类似 [FIRING:1] MySQLDown 的邮件。测完记得启动回来：
+bash
+
+docker start toy-mysql
+启动后 Prometheus 会检测到 mysql_up 变回 1,Alertmanager 因为你配了 send_resolved: true,会再发一封"已恢复"的邮件——这样"指标异常 → 触发规则 → 收到通知 → 恢复后收到解除通知"这条完整链路就走通了。
+这一步验证之前,先确认一件小事：docker stop toy-mysql 会让你之前验证过的 search-service/notification-service 这些依赖 MySQL 的 Java 服务短暂报错,homelab 场景问题不大,但如果你正好在用这几个服务做别的测试,挑个不冲突的时间点再停。
+
+Checking two-step verification status from the screenshot.
+Checking two-step verification status from the screenshot.
+原因就是第 1 条:两步验证还没开
+截图底部那个按钮「2 段階認証プロセスを有効にする」还能点,说明两步验证现在是关闭状态。第二步的材料你已经备齐了:7 个通行密钥、Google 消息(8 台设备)、手机号。所以直接点就行。
+
+接下来
+点那个按钮「2 段階認証プロセスを有効にする」,按提示确认。
+开启后回到这个「2 段階認証プロセス」页面,滚到最底部,会出现「アプリ パスワード」。
+或者直接打开 myaccount.google.com/apppasswords。
+名字填 homelab-alertmanager,生成 16 位密码。只显示一次,马上复制。填进 --set-string 时去掉空格。
+两点提醒
+「認証システム」那一行的黄色感叹号是建议加验证器 App,不是必须。有手机号就满足条件,应用专用密码页面能出来。
+开启之后,你用密码登录 Google 时会多一步验证。你已经有 7 个通行密钥,日常登录基本无感。
+如果开启后页面依然没出现,再把截图发我,那就要查是不是高级保护计划或账号类型的问题。
+日本語
+スクリーンショットの下(した)のボタン「2 段階認証(だんかいにんしょう)プロセスを有効(ゆうこう)にする」が押(お)せる状態(じょうたい)なので、2段階認証(だんかいにんしょう)はまだオフです。これが原因(げんいん)でした。ボタンを押(お)して有効(ゆうこう)にし、このページの**一番下(いちばんした)**に出(で)る「アプリ パスワード」から16桁(けた)のパスワードを作成(さくせい)してください。表示(ひょうじ)は一度(いちど)きりなので、すぐコピーしましょう。認証(にんしょう)システムの黄色(きいろ)い「!」は推奨(すいしょう)だけで、必須(ひっす)ではありません。
+
+English
+Your 2-Step Verification is currently off, which is why the page is hidden. The blue button at the bottom is the “turn on” button. You already have passkeys, Google prompts and a phone number, so just click it. Afterwards, scroll to the bottom of this same page for “App passwords” (or go to myaccount.google.com/apppasswords), create one named homelab-alertmanager, and copy the 16 characters right away since it’s shown only once. The yellow warning on the authenticator app is optional.
+
+生成密码后,下一步是跑 helm upgrade 前先用 helm get values 对一下本地 values 文件。密码拿到手再继续,不要把密码贴到聊天里。
+
+Compacted conversation
+Compacted conversation
+1791499435712_image.png
+Checking the account settings screenshot for security options.
+Checking the account settings screenshot for security options.
+两步验证已经开启了,按钮已经变成「無効にする」
+不过这张截图里,列表只有通行密钥、Google 消息、验证器、手机号、备份码,没有看到「アプリ パスワード」这一行。它可能在页面更下面,截图只截到了按钮。
+
+下一步,按顺序试
+继续往下滚,看按钮下方有没有「アプリ パスワード」。
+没有的话,直接打开 https://myaccount.google.com/apppasswords。
+还是不行,在账号页顶部搜索框搜「アプリ パスワード」。
+刚开启时,入口有时要过一会儿才出现。如果三种方法都找不到、或者打开后显示"お客様のアカウントでは使用できません"之类的提示,把那个画面截给我。那时要查的就是高级保护计划(Security 页面会写明)和账号类型,这两条我这边没法判断。
+
+顺便一提
+「バックアップ コード」那行的黄色感叹号也是建议项。你现在两步验证已开,备份码是手机丢了时的后路,有空可以生成一份存起来,不急着今天做。
+
+日本語
+2段階認証(だんかいにんしょう)は有効(ゆうこう)になりました(ボタンが「無効(むこう)にする」に変(か)わっています)。ただ、このスクリーンショットには「アプリ パスワード」の行(ぎょう)が見(み)えません。①さらに下(した)へスクロール、②myaccount.google.com/apppasswordsを直接(ちょくせつ)開(ひら)く、③検索(けんさく)ボックスで「アプリ パスワード」を検索(けんさく)、の順(じゅん)に試(ため)してください。それでも出(で)ない場合(ばあい)は、画面(がめん)を送(おく)ってください。
+
+English
+2-Step Verification is now on (the button says “turn off”). But the “App passwords” row isn’t visible in this screenshot. Scroll further down, or open myaccount.google.com/apppasswords directly, or search “App passwords” in the account search box. If it still doesn’t show, or shows “not available for your account”, send me that screen and we’ll check Advanced Protection and account type.
+
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/frontend$ helm get values kube-prometheus-stack -n toy-infra
+USER-SUPPLIED VALUES:
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+grafana:
+  adminPassword: Z***w
+  ingress:
+    enabled: true
+    hosts:
+    - grafana.homelab.local
+    ingressClassName: nginx
+  persistence:
+    enabled: true
+    size: 2Gi
+    storageClassName: local-path
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+kubeControllerManager:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeProxy:
+  enabled: false
+kubeScheduler:
+  enabled: false
+prometheus:
+  prometheusSpec:
+    podMonitorSelectorNilUsesHelmValues: false
+    resources:
+      limits:
+        memory: 1Gi
+      requests:
+        cpu: 200m
+        memory: 512Mi
+    retention: 7d
+    serviceMonitorSelectorNilUsesHelmValues: false
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+          - ReadWriteOnce
+          resources:
+            requests:
+              storage: 10Gi
+          storageClassName: local-path
+
+下面是本地文件
+
+# kube-prometheus-stack values - homelab精简版
+# 完整默认values很长（几千行），这里只覆盖需要改动的部分，其余用chart默认值
+
+# --- Prometheus本体 ---
+prometheus:
+  prometheusSpec:
+    retention: 7d              # homelab磁盘有限，默认15d改成7天，够用于练习排查
+    resources:
+      requests: { cpu: 200m, memory: 512Mi }
+      limits: { memory: 1Gi }
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: local-path   # k3s默认自带的StorageClass，你P5就用过
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests: { storage: 10Gi }
+    # 关键：默认这个chart只会抓"带release标签、且和release同namespace"的
+    # ServiceMonitor，会导致你自己手写的ServiceMonitor被忽略。这两行放开限制，
+    # 抓取范围覆盖所有namespace里所有的ServiceMonitor/PodMonitor，不用逐个打标签。
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+
+# --- Grafana ---
+grafana:
+  adminPassword: "${GRAFANA_ADMIN_PASSWORD}"   # 用--set传入，不写死在文件里，见下方命令
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+  persistence:
+    enabled: true
+    storageClassName: local-path
+    size: 2Gi
+  ingress:
+    enabled: true
+    ingressClassName: nginx      # 你P2就用ingress-nginx替换了默认Traefik
+    hosts:
+      - grafana.homelab.local    # 跟app.homelab.local/api.homelab.local同一套域名习惯
+
+# --- Alertmanager：homelab阶段先不配置真实告警通道(邮件/webhook)，
+#     只是把组件跑起来体验界面，告警规则留到后面按需加 ---
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+
+# --- 这几个组件homelab单机场景意义不大，先关掉省资源 ---
+kubeEtcd:
+  enabled: false     # k3s的etcd替代品(embedded)不暴露标准etcd metrics端口，装了也抓不到
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false     # k3s默认用不了标准kube-proxy指标端点(用的是简化实现)
+apppassword 已经申请完了，我是不是需要改一下本地文件加上占位，只把密码占位就行，其他直接写死进去。。帮我统一处理一下吧
+
+准备升级命令与验证步骤的说明。
+先把文件改好。
+
+Updated kube-prometheus-stack-values.yaml
+Preparing the final multilingual response with formatting choices.
+
+Double-checking credential handling and config merge details.
+
+本地文件已改好,密码都不写进文件
+文件在 /mnt/user-data/outputs/kube-prometheus-stack-values.yaml。改动如下:
+
+两个密码用占位符:grafana.adminPassword 和 smtp_auth_password 都写成 CHANGE_ME_VIA_SET,靠命令行 --set 传入。
+其余全部写死:SMTP 服务器 smtp.gmail.com:587、TLS、路由、send_resolved: true 都在文件里。
+Gmail 地址:文件里有 3 处 YOUR_GMAIL@gmail.com,你替换成自己的地址即可。地址不是秘密,所以我没有用 --set 传。
+路由:Watchdog(永远在触发的心跳告警)和 InfoInhibitor 路由到空接收器。你截图里 general.rules 有 1 条 FIRING,就是 Watchdog,不屏蔽的话会按 repeat_interval 反复给你发邮件。
+注意:helm 不会展开 ${VAR}。上一版文件里的 "${GRAFANA_ADMIN_PASSWORD}" 如果忘了 --set,会被原样当成密码部署。新版改成了明显的占位符,忘传也一眼能看出来。
+
+执行步骤
+1. 替换 Gmail 地址(在你本地那份文件上)
+
+bash
+sed -i 's/YOUR_GMAIL@gmail.com/你的地址@gmail.com/g' kube-prometheus-stack-values.yaml
+grep -n gmail kube-prometheus-stack-values.yaml   # 应该看到 3 行
+2. 查当前 chart 版本,upgrade 时锁定
+
+bash
+helm list -n toy-infra
+看 CHART 列,比如 kube-prometheus-stack-83.4.0,记下 83.4.0 这部分。不加 --version 的话,helm upgrade 会顺带把 chart 升到最新版,你不想在加告警时同时升级整套监控。
+
+3. 交互式输入密码再 upgrade(密码不进 shell 历史)
+
+bash
+read -rsp "Grafana admin password: " GF_PW; echo
+read -rsp "Gmail app password (16位,无空格): " APP_PW; echo
+
+helm upgrade kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+  -n toy-infra \
+  --version <第2步查到的版本> \
+  -f kube-prometheus-stack-values.yaml \
+  --set-string grafana.adminPassword="$GF_PW" \
+  --set-string alertmanager.config.global.smtp_auth_password="$APP_PW"
+Grafana 密码里如果有逗号 ,,--set 会把它当分隔符,需要写成 \,。
+
+4. 确认 Alertmanager 加载了新配置
+
+bash
+kubectl logs -n toy-infra alertmanager-kube-prometheus-stack-alertmanager-0 -c alertmanager --tail 20
+看到 Completed loading of configuration file 即成功。也可以打开 alertmanager.homelab.local 的 Status 页,确认 smtp_smarthost 已生效,smtp_auth_password 会显示为 <secret>。
+
+5. 端到端测试
+
+bash
+docker stop toy-mysql      # 约 1 分钟后收邮件 [FIRING:1] MySQLDown
+docker start toy-mysql     # 随后收到恢复邮件
+停 MySQL 期间,依赖它的 Java 服务会短暂报错,挑个不冲突的时间。
+
+如果 docker stop 后 3 分钟还没收到邮件,检查顺序是:Prometheus Alerts 页 MySQLDown 是否变成 Firing → Alertmanager 页是否收到这条告警 → Alertmanager 日志里有没有 535 之类的 SMTP 认证错误。把看到的现象发我。
+
+日本語
+パスワード2つ(Grafana管理者(かんりしゃ)とGmailアプリパスワード)はファイルに書(か)かず、--setで渡(わた)します。それ以外(いがい)(SMTP設定(せってい)やルーティング)はファイルに直書(じかが)きしました。ファイル内(ない)のYOUR_GMAIL@gmail.com(3か所(しょ))を自分(じぶん)のアドレスに置換(ちかん)してください。helm upgradeには--versionを付(つ)けて、チャートが勝手(かって)に最新版(さいしんばん)へ上(あ)がらないようにします。Watchdogは常時(じょうじ)発火(はっか)するハートビートなので、空(から)の受信先(じゅしんさき)へ流(なが)してメールを防(ふせ)ぎます。
+
+English
+Both secrets (Grafana admin password and the Gmail app password) stay out of the file and are passed with --set-string; everything else is hardcoded. Replace the three YOUR_GMAIL@gmail.com placeholders in your local copy. Pin --version to the installed chart version so this upgrade doesn’t also bump the whole stack. Watchdog always fires by design, so it’s routed to a null receiver to avoid repeated emails. After the upgrade, check the Alertmanager log for “Completed loading of configuration file”, then stop toy-mysql for a minute to test the full alert-and-resolve email loop.

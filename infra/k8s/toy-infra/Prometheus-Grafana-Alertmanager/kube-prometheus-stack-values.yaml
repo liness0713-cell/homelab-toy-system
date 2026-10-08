@@ -1,6 +1,12 @@
 # kube-prometheus-stack values - homelab精简版
 # 完整默认values很长（几千行），这里只覆盖需要改动的部分，其余用chart默认值
 
+# 两个密码都不写进文件，用 helm 命令行 --set / --set-string 传入：
+#   grafana.adminPassword
+#   alertmanager.config.global.smtp_auth_password
+# 注意：helm 不会展开 ${VAR} 这种环境变量，文件里的占位符如果忘了 --set，
+# 会被原样部署上去（Grafana 密码会变成占位符，邮件会发送失败）。
+
 # --- Prometheus本体 ---
 prometheus:
   prometheusSpec:
@@ -23,7 +29,7 @@ prometheus:
 
 # --- Grafana ---
 grafana:
-  adminPassword: "${GRAFANA_ADMIN_PASSWORD}"   # 用--set传入，不写死在文件里，见下方命令
+  adminPassword: "CHANGE_ME_VIA_SET"   # 用 --set grafana.adminPassword=... 传入
   resources:
     requests: { cpu: 100m, memory: 256Mi }
   persistence:
@@ -36,12 +42,41 @@ grafana:
     hosts:
       - grafana.homelab.local    # 跟app.homelab.local/api.homelab.local同一套域名习惯
 
-# --- Alertmanager：homelab阶段先不配置真实告警通道(邮件/webhook)，
-#     只是把组件跑起来体验界面，告警规则留到后面按需加 ---
+# --- Alertmanager：通过 Gmail SMTP 发邮件 ---
+# 把 YOUR_GMAIL@gmail.com 替换成你的 Gmail 地址（共 3 处）
 alertmanager:
   alertmanagerSpec:
     resources:
       requests: { cpu: 50m, memory: 128Mi }
+  config:
+    global:
+      resolve_timeout: 5m
+      smtp_smarthost: "smtp.gmail.com:587"
+      smtp_from: "liness.0713@gmail.com"
+      smtp_auth_username: "liness.0713@gmail.com"
+      smtp_auth_password: "CHANGE_ME_VIA_SET"   # 用 --set-string 传入16位应用专用密码
+      smtp_require_tls: true
+    route:
+      receiver: gmail
+      group_by: ["alertname", "namespace"]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      routes:
+        # Watchdog 是"永远在触发"的心跳告警，InfoInhibitor 是抑制用的内部告警，
+        # 都不该发邮件，路由到空接收器
+        - receiver: "null"
+          matchers:
+            - alertname = "Watchdog"
+        - receiver: "null"
+          matchers:
+            - alertname = "InfoInhibitor"
+    receivers:
+      - name: "null"
+      - name: gmail
+        email_configs:
+          - to: "liness.0713@gmail.com"
+            send_resolved: true
 
 # --- 这几个组件homelab单机场景意义不大，先关掉省资源 ---
 kubeEtcd:

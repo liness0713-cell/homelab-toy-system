@@ -2,6 +2,8 @@ grafana pwd
 admin
 ZWxhc3RpYw
 
+告警用google app pwd没有在项目里记载
+
 装 Prometheus 本体，用 kube-prometheus-stack 这个 Helm chart 一次性搞定 Prometheus+Grafana+Alertmanager
 
 ## Step 1：Helm 装 kube-prometheus-stack 到 toy-infra
@@ -51,3 +53,11 @@ kubectl get pods -n toy-infra | grep -E "prometheus|grafana|alertmanager"
 
 kubectl apply -f servicemonitors-k3s.yaml
 kubectl apply -f host-exporters-monitoring.yaml
+
+## Step 3：设置alertmanager
+ziqiao@ziqiao-ASM100:~/Documents/homelab-toy-system/frontend$ helm upgrade kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+  -n toy-infra \
+  --version 91.5.0 \
+  -f /home/ziqiao/Documents/homelab-toy-system/infra/k8s/toy-infra/Prometheus-Grafana-Alertmanager/kube-prometheus-stack-values.yaml \
+  --set-string grafana.adminPassword="ZWxhc3RpYw" \
+  --set-string alertmanager.config.global.smtp_auth_password="换成存在本地的app pwd"
